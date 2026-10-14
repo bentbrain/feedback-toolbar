@@ -1364,13 +1364,7 @@ function Dashboard({
     destination.searchParams.set('project', p.id);
     window.open(destination.href, '_blank', 'noopener');
   };
-  const visible = threads.filter(
-    (thread) =>
-      (filter === 'all' || thread.status === filter) &&
-      `${thread.messages.map((message) => message.body).join(' ')} ${thread.context.url}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-  );
+  const visible = threads;
   const changeView = (next: View) => {
     setView(next);
     setActiveId(null);
@@ -1562,6 +1556,7 @@ function Dashboard({
                     <Input
                       value={search}
                       onChange={(event) => {
+                        setActiveId(null);
                         setSearch(event.target.value);
                       }}
                       placeholder="Search feedback…"
@@ -1574,7 +1569,10 @@ function Dashboard({
                   <Tabs
                     value={filter}
                     onValueChange={(value) => {
-                      if (typeof value === 'string') setFilter(value);
+                      if (typeof value === 'string') {
+                        setActiveId(null);
+                        setFilter(value);
+                      }
                     }}
                   >
                     <TabsList variant="line" className="h-14 gap-6 border-b px-6">

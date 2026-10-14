@@ -1,3 +1,4 @@
+import { verifyPublishedAssets } from './release-assets.js';
 import { readdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
@@ -94,5 +95,9 @@ if (process.argv.includes('--dry-run')) {
     await delay(3000);
   }
   if (!ready) throw new Error('Vercel deployment did not become ready within eight minutes.');
-  console.log(`Production deployment ready: https://${created.url}`);
+  await verifyPublishedAssets(
+    `${output}/static/assets`,
+    originSchema.parse(process.env.FEEDBACK_URL),
+  );
+  console.log(`Production deployment ready and release assets verified: https://${created.url}`);
 }

@@ -13,6 +13,7 @@ import {
   threadSchema,
 } from '../shared/models.js';
 import type { Theme, Thread } from '../shared/models.js';
+import { createConnectionStore } from './connection-store.js';
 import { applyTheme, messageOf, relativeTime, request, rootElement } from './ui.js';
 import { Button } from './components/ui/button.js';
 import { Badge } from './components/ui/badge.js';
@@ -22,12 +23,7 @@ import { TooltipProvider } from './components/ui/tooltip.js';
 import { Toaster } from './components/ui/sonner.js';
 import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
 import type { Work } from './components/common.js';
-import {
-  connectionSchema,
-  deviceConnectionSchema,
-  exchangeConnection,
-  revokeConnection,
-} from '../shared/oauth.js';
+import { deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
 
 const parameters = new URLSearchParams(location.search);
 const projectId = parameters.get('project') ?? '';
@@ -37,31 +33,14 @@ const send = (data: unknown) => {
 };
 const publicProjectSchema = z.object({ name: z.string(), theme: themeSchema });
 const themeOverridesSchema = themeSchema.partial();
-const authenticationSchema = connectionSchema;
-type Authentication = z.infer<typeof authenticationSchema>;
-const sessionKey = `feedback-embed:${projectId}:${parentOrigin}`;
-function savedSession(): Authentication | null {
-  try {
-    const data = sessionStorage.getItem(sessionKey);
-    if (!data) return null;
-    const result = authenticationSchema.safeParse(JSON.parse(data));
-    return result.success ? result.data : null;
-  } catch {
-    return null;
-  }
-}
-function storeSession(auth: Authentication | null) {
-  try {
-    if (auth) sessionStorage.setItem(sessionKey, JSON.stringify(auth));
-    else sessionStorage.removeItem(sessionKey);
-  } catch {
-    /* Browsers that deny embedded storage keep the session in memory. */
-  }
-}
+const connectionStore = createConnectionStore(
+  `feedback-embed:${projectId}:${parentOrigin}`,
+  location.origin,
+);
 function Toolbar() {
   const [expanded, setExpanded] = useState(false);
   const [mini, setMini] = useState(false);
-  const [auth, setAuth] = useState(savedSession);
+  const [auth, setAuth] = useState(connectionStore.read);
   const [projectName, setProjectName] = useState('Feedback');
   const [theme, setTheme] = useState<Theme>(defaultTheme);
   const [overrides, setOverrides] = useState<z.infer<typeof themeOverridesSchema>>({});
@@ -91,36 +70,18 @@ function Toolbar() {
     () => themeSchema.parse({ ...theme, ...overrides }),
     [theme, overrides],
   );
-  const renewal = useRef<Promise<Authentication> | null>(null);
   const latestAuth = useRef(auth);
   const api = useCallback(
     async (path: string, options: { method?: string; body?: unknown } = {}) => {
-      let current = latestAuth.current ?? auth;
-      if (current && current.expiresAt < Date.now() + 60_000) {
-        const previous = current;
-        renewal.current ??= exchangeConnection(location.origin, previous.clientId, {
-          refreshToken: previous.refreshToken,
-        })
-          .then((result) => {
-            if (!result.connection) throw new Error('Sign in again.');
-            const renewed = { ...result.connection, user: result.connection.user ?? previous.user };
-            latestAuth.current = renewed;
-            storeSession(renewed);
-            setAuth(renewed);
-            return renewed;
-          })
-          .finally(() => {
-            renewal.current = null;
-          });
-        current = await renewal.current;
+      const current = await connectionStore.current();
+      if (current.token !== latestAuth.current?.token) {
+        latestAuth.current = current;
+        setAuth(current);
       }
-      return request(path, { ...options, ...(current ? { token: current.token } : {}) });
+      return request(path, { ...options, token: current.token });
     },
-    [auth],
+    [],
   );
-  useEffect(() => {
-    latestAuth.current = auth;
-  }, [auth]);
   const refresh = useCallback(async () => {
     if (!auth) return;
     const current = ++version.current;
@@ -204,6 +165,12 @@ function Toolbar() {
   useEffect(() => {
     if (!auth) return;
     const fail = (failure: unknown) => {
+      if (!connectionStore.read()) {
+        latestAuth.current = null;
+        setAuth(null);
+        setThreads([]);
+        setJobs([]);
+      }
       setError(messageOf(failure));
     };
     void refresh().catch(fail);
@@ -282,8 +249,9 @@ function Toolbar() {
           return;
         }
         if (result.connection && !isCancelled()) {
+          connectionStore.start(result.connection);
+          latestAuth.current = result.connection;
           setAuth(result.connection);
-          storeSession(result.connection);
           setPending(null);
           setError('');
         }
@@ -363,9 +331,9 @@ function Toolbar() {
   };
   const signOut = async () => {
     try {
-      if (auth) await revokeConnection(location.origin, auth.clientId, auth.refreshToken);
+      await connectionStore.signOut();
     } finally {
-      storeSession(null);
+      latestAuth.current = null;
       setAuth(null);
       setThreads([]);
       loadedPages.current = false;

@@ -30,6 +30,36 @@ test('new user creates a project, customizes its theme, and gets the installatio
   const result = z.object({ projects: z.array(projectSchema) }).parse(await state.json());
   expect(result.projects[0]?.theme.mode).toBe('dark');
   expect(result.projects[0]?.theme.accent).toBe('#72865d');
+  const project = result.projects[0];
+  if (!project) throw new Error('Project missing.');
+  const createdThread = await page.request.post(`/api/projects/${project.id}/threads`, {
+    data: {
+      body: 'Change the button',
+      context: {
+        url: 'http://localhost:44321/',
+        viewport: { width: 1280, height: 800 },
+        deployment: null,
+        anchor: {
+          selector: 'button',
+          feedbackId: null,
+          tag: 'button',
+          text: 'Button',
+          label: '',
+          rect: { x: 0, y: 0, width: 100, height: 30 },
+        },
+      },
+    },
+  });
+  const thread = z.object({ thread: threadSchema }).parse(await createdThread.json()).thread;
+  await page.request.post(`/api/threads/${thread.id}/messages`, { data: { body: 'Use magenta' } });
+  await page.getByRole('button', { name: 'Feedback', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Search feedback' }).fill('magenta');
+  await expect(page.getByText('Change the button', { exact: true })).toBeVisible();
+  await page.getByText('Change the button', { exact: true }).click();
+  await expect(page.getByText('Use magenta', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('textbox', { name: 'Search feedback' }).fill('absent-term');
+  await expect(page.getByText('Change the button', { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
@@ -75,6 +105,24 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await expect(frame.getByRole('button', { name: 'New feedback' })).toBeVisible({
     timeout: 15_000,
   });
+  await page.evaluate(() => {
+    const editing = document.createElement('section');
+    editing.innerHTML =
+      '<div id="editable-empty" contenteditable>Secret draft</div><div id="editable-plain" contenteditable="plaintext-only">Secret plaintext</div><div contenteditable><span id="editable-inherited">Inherited secret</span></div><div id="editable-parent">Public text <div contenteditable>Private child draft</div></div>';
+    document.body.prepend(editing);
+  });
+  for (const id of ['editable-empty', 'editable-plain', 'editable-inherited']) {
+    await frame.getByRole('button', { name: 'New feedback' }).click();
+    await page.locator(`#${id}`).click();
+    await expect(frame.getByText('[Private element]', { exact: true })).toBeVisible();
+    await expect(frame.getByText(/Secret draft|Secret plaintext|Inherited secret/)).toHaveCount(0);
+    await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  }
+  await frame.getByRole('button', { name: 'New feedback' }).click();
+  await page.locator('#editable-parent').click({ position: { x: 5, y: 5 } });
+  await expect(frame.getByText('Public text', { exact: true })).toBeVisible();
+  await expect(frame.getByText('Private child draft', { exact: true })).toHaveCount(0);
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
   await frame.getByRole('button', { name: 'New feedback' }).click();
   await page.locator('[data-feedback-id=hero-button]').click();
   await frame

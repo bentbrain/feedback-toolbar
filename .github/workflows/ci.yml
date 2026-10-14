@@ -222,10 +222,6 @@ jobs:
           BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
           AUTH_GITHUB_CLIENT_ID: ${{ vars.AUTH_GITHUB_CLIENT_ID }}
           AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
-      - name: Deploy API Worker
-        run: bun run deploy:worker --var "ASSET_VERSION:$GITHUB_SHA"
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - name: Link Vercel project
         env:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
@@ -236,14 +232,19 @@ jobs:
           await mkdir('.vercel', { recursive: true });
           await writeFile('.vercel/project.json', JSON.stringify({ orgId: process.env.VERCEL_ORG_ID, projectId: process.env.VERCEL_PROJECT_ID }));
           JS
-      - name: Deploy tested assets
+      - name: Publish and verify new assets with the active release retained
         run: bun run deploy:vercel
         env:
+          FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
           FEEDBACK_PROXY_SECRET: ${{ secrets.FEEDBACK_PROXY_SECRET }}
           FEEDBACK_API_ORIGIN: ${{ vars.FEEDBACK_API_ORIGIN }}
+      - name: Deploy API Worker
+        run: bun run deploy:worker --var "ASSET_VERSION:$GITHUB_SHA"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - name: Verify production health
         env:
           FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}

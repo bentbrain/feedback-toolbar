@@ -33,7 +33,7 @@ toolbar.destroy();
 
 The package has not been released to npm yet. Build from this repository or install a reviewed GitHub commit. HTML integration needs only the hosted script.
 
-Add `data-feedback-id="hero-cta"` to important elements to keep anchors stable across deployments. The selector, bounded element text, viewport, URL, and deployment reference accompany the comment. The loader excludes form values and elements marked `data-feedback-private`; the service strips URL queries and fragments.
+Add `data-feedback-id="hero-cta"` to important elements to keep anchors stable across deployments. The selector, bounded element text, viewport, URL, and deployment reference accompany the comment. The loader excludes form values, editable content including inherited editing contexts, and elements marked `data-feedback-private`; the service strips URL queries and fragments.
 
 ## Agent-assisted setup
 
@@ -104,11 +104,13 @@ bun audit --audit-level=high
 
 Checks include formatting, strict typed ESLint, TypeScript, Knip, authorization/concurrency tests, a real local Workers/D1 integration, Chromium browser flows, and a Worker bundle check. Browser tests exercise independent toolbar authorization, element selection, reactions, work requests, result delivery, theming, and host-style isolation.
 
+Toolbar grants remain behind the service origin. Where browser storage and Web Locks are available, a tab keeps only a grant pointer in session storage; token rotation uses a shared record under an exclusive browser lock. Copied tabs therefore cannot replay stale refresh tokens. Stored toolbar connections expire after eight hours and require approval again. Browsers that block these APIs keep independent grants in iframe memory and require sign-in after reload. Signing out revokes the shared grant for all its copies. Account revocation also invalidates approved device codes that have not yet been exchanged.
+
 ## Production deployment
 
 Vercel serves versioned browser assets and forwards dynamic paths through a small Node function to a Cloudflare Worker. The function signs the visitor IP, method, path, and timestamp with HMAC. The Worker rejects unsigned production API requests, preventing forged identity headers and shared proxy IP rate limits. D1 stores Better Auth accounts and OAuth grants, memberships, hashed agent keys, threads, work requests, persistent rate limits, and audit events. The example website runs on the Worker origin, separately from the toolbar UI.
 
-GitHub Actions deploys only a protected `main` commit after **Required checks** passes. The pipeline prepares the frontend, applies D1 migrations, provisions authentication secrets into the Worker, deploys the API, uploads the prebuilt assets and proxy function through Vercel's deployment API, and checks production health. Versioned asset paths prevent browsers from reusing an older release's scripts. Vercel Git auto-deployments are disabled. No deploy credentials are supplied to PR tests.
+GitHub Actions deploys only a protected `main` commit after **Required checks** passes. The pipeline prepares the frontend and retains the version currently reported by production health, applies backward-compatible D1 migrations, provisions authentication secrets, and uploads the prebuilt assets and proxy function through Vercel's deployment API. It verifies the published bytes of both asset versions before deploying the Worker with the new asset version, then checks production health. A failed asset publication leaves the Worker on its previous version; a failed Worker activation leaves its assets available. Versioned asset paths prevent browsers from reusing an older release's scripts. Vercel Git auto-deployments are disabled. No deploy credentials are supplied to PR tests.
 
 Repository secrets:
 

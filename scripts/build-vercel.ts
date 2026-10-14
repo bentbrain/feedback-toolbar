@@ -1,5 +1,6 @@
 import { mkdir, copyFile, writeFile, rm } from 'node:fs/promises';
 import { build } from 'esbuild';
+import { retainActiveAssets } from './release-assets.js';
 import { originSchema } from '../src/shared/models.js';
 
 const api = originSchema.parse(process.env.FEEDBACK_API_ORIGIN ?? 'http://localhost:8787');
@@ -31,6 +32,7 @@ for (const asset of ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'sty
   await copyFile(`dist/${asset}`, `${target}/static/${asset}`);
   if (release) await copyFile(`dist/${asset}`, `${target}/static/assets/${release}/${asset}`);
 }
+if (release) await retainActiveAssets(`${target}/static/assets`, service, release);
 await copyFile('assets/icon.svg', `${target}/static/icon.svg`);
 if (api === service) throw new Error('The API example and toolbar require separate origins.');
 await writeFile(

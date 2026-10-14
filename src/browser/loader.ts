@@ -15,7 +15,7 @@ function record(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 function sanitizeText(element: Element): string {
-  if (element.closest('[data-feedback-private], input, textarea, select, [contenteditable="true"]'))
+  if (element.closest('[data-feedback-private], input, textarea, select, [contenteditable]'))
     return '[Private element]';
   const clone = element.cloneNode(true);
   if (!(clone instanceof Element)) return '';

@@ -777,3 +777,75 @@ void test('account recovery revokes lost OAuth grants and agent keys while retai
   assert.equal((await f.call('/api/me', { bearer: agent })).status, 401);
   assert.equal((await f.call('/api/me', { cookie: owner.cookie })).status, 200);
 });
+
+void test('account recovery invalidates approved device codes before redemption without revoking another user', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const other = await f.account('Other user');
+  const prepare = async (cookie: string) => {
+    const device = z
+      .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+      .parse(
+        await (
+          await f.call('/api/connections/start', {
+            method: 'POST',
+            body: { kind: 'personal', projectId: null, parentOrigin: null },
+          })
+        ).json(),
+      );
+    assert.equal(
+      (
+        await f.call('/api/connections/approve', {
+          method: 'POST',
+          cookie,
+          body: { code: device.user_code, accept: true },
+        })
+      ).status,
+      200,
+    );
+    return device;
+  };
+  const redeem = (device: { clientId: string; device_code: string }) =>
+    f.call('/api/auth/oauth2/token', {
+      method: 'POST',
+      body: {
+        client_id: device.clientId,
+        device_code: device.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        resource: `${service}/api`,
+      },
+    });
+  const lost = await prepare(owner.cookie);
+  const unaffected = await prepare(other.cookie);
+  assert.equal(
+    z
+      .object({ connections: z.array(z.object({ clientId: z.string() })) })
+      .parse(await (await f.call('/api/account/connections', { cookie: owner.cookie })).json())
+      .connections[0]?.clientId,
+    lost.clientId,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/account/connections/${lost.clientId}`, {
+        method: 'DELETE',
+        cookie: owner.cookie,
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await redeem(lost)).status, 400);
+  assert.equal((await redeem(unaffected)).status, 200);
+  const approved = await prepare(owner.cookie);
+  assert.equal(
+    (await f.call('/api/account/revoke-all', { method: 'POST', cookie: owner.cookie, body: {} }))
+      .status,
+    200,
+  );
+  assert.equal((await redeem(approved)).status, 400);
+  assert.equal((await redeem(await prepare(owner.cookie))).status, 200);
+});

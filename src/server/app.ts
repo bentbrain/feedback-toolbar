@@ -458,8 +458,8 @@ export function createApp(options: Options) {
     if (c.get('principal').kind !== 'session')
       throw new HttpError(403, 'Manage connections from your browser.');
     const result = await store.database.execute({
-      sql: 'SELECT DISTINCT r.clientId,c.name,c.metadata FROM oauthRefreshToken r JOIN oauthClient c ON c.clientId=r.clientId WHERE r.userId=? AND r.revoked IS NULL LIMIT 200',
-      params: [c.get('user').id],
+      sql: "SELECT DISTINCT c.clientId,c.name,c.metadata FROM oauthClient c JOIN (SELECT clientId FROM oauthRefreshToken WHERE userId=? AND revoked IS NULL UNION SELECT clientId FROM deviceCode WHERE userId=? AND status='approved') r ON c.clientId=r.clientId LIMIT 200",
+      params: [c.get('user').id, c.get('user').id],
     });
     const connections = result.rows.map((value) => {
       const row = z
@@ -479,6 +479,7 @@ export function createApp(options: Options) {
     const userId = c.get('user').id;
     const clientId = c.req.param('clientId');
     await store.database.batch([
+      { sql: 'DELETE FROM deviceCode WHERE userId=? AND clientId=?', params: [userId, clientId] },
       {
         sql: 'DELETE FROM oauthAccessToken WHERE userId=? AND clientId=?',
         params: [userId, clientId],
@@ -495,6 +496,7 @@ export function createApp(options: Options) {
       throw new HttpError(403, 'Manage connections from your browser.');
     const userId = c.get('user').id;
     await store.database.batch([
+      { sql: 'DELETE FROM deviceCode WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM oauthAccessToken WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM oauthRefreshToken WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM apikey WHERE referenceId=?', params: [userId] },
@@ -1100,6 +1102,6 @@ export function createApp(options: Options) {
   app.get('/auth', (c) =>
     c.html(html('Sign in · Feedback', 'app.js', 'styles.css', c.get('nonce'))),
   );
-  app.get('/health', (c) => c.json({ ok: true }));
+  app.get('/health', (c) => c.json({ ok: true, assetVersion: options.assetVersion ?? null }));
   return app;
 }

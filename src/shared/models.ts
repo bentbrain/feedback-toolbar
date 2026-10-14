@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import emojiRegex from 'emoji-regex';
 
 export const originSchema = z
   .string()
@@ -106,8 +107,13 @@ export const contextSchema = z
     anchor: anchorSchema,
   })
   .strict();
+export const emojiSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(new RegExp(`^(?:${emojiRegex().source})(?![\\s\\S])`), 'Use a single emoji.');
 const reactionSchema = z.object({
-  emoji: z.string().min(1).max(16),
+  emoji: emojiSchema,
   actorId: z.string(),
   name: z.string(),
 });

@@ -24,6 +24,7 @@ import { initials, relativeTime } from '../ui.js';
 import type { Thread } from '../../shared/models.js';
 import { publicJobSchema } from '../../shared/models.js';
 import { z } from 'zod';
+import { MessageReactions } from './message-reactions.js';
 
 export type Work = z.infer<typeof publicJobSchema>;
 export function Brand({ small = false }: { small?: boolean }) {
@@ -253,7 +254,9 @@ export function Conversation({
   onHighlight,
   onCancel,
   compact = false,
+  actorId,
 }: {
+  actorId?: string | undefined;
   thread: Thread;
   job?: Work | undefined;
   role: string;
@@ -342,27 +345,12 @@ export function Conversation({
               >
                 {message.body}
               </p>
-              <div className="mt-2 flex gap-1">
-                {['👍', '❤️', '👀', '🎉'].map((emoji) => {
-                  const reactions = message.reactions.filter(
-                    (reaction) => reaction.emoji === emoji,
-                  );
-                  return (
-                    <Button
-                      key={emoji}
-                      variant="outline"
-                      size="xs"
-                      className="h-6 px-1.5 text-[10px]"
-                      aria-label={`React with ${emoji}`}
-                      disabled={busy || role === 'viewer'}
-                      onClick={() => void work('react', () => onReact(message.id, emoji))}
-                    >
-                      {emoji}
-                      {reactions.length || ''}
-                    </Button>
-                  );
-                })}
-              </div>
+              <MessageReactions
+                message={message}
+                actorId={actorId}
+                disabled={busy || role === 'viewer'}
+                onReact={(emoji) => work('react', () => onReact(message.id, emoji))}
+              />
             </div>
           </div>
         ))}

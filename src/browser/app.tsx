@@ -1796,6 +1796,7 @@ function DashboardContent({
               thread={active}
               job={jobs.filter((job) => job.threadId === active.id).at(-1)}
               role={p.role}
+              actorId={user.id}
               onReply={async (body) => {
                 acceptThread(
                   await request(`/api/threads/${active.id}/messages`, {

@@ -6,7 +6,11 @@ export default defineConfig({
   workers: 1,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
-  use: { baseURL: 'http://localhost:44320', trace: 'off', screenshot: 'only-on-failure' },
+  use: {
+    baseURL: `http://localhost:${process.env.FEEDBACK_E2E_PORT ?? '44320'}`,
+    trace: 'off',
+    screenshot: 'only-on-failure',
+  },
   projects: [
     { name: 'chromium', testIgnore: 'theme.spec.ts', use: { ...devices['Desktop Chrome'] } },
     {

@@ -7,15 +7,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 export const test = base.extend<{ service: boolean }>({
   service: [
     async ({ baseURL }, use) => {
-      if (baseURL !== 'http://localhost:44320')
+      const port = process.env.FEEDBACK_E2E_PORT ?? '44320';
+      if (baseURL !== `http://localhost:${port}`)
         throw new Error('Unexpected browser fixture origin');
       await mkdir('.data', { recursive: true, mode: 0o700 });
       const directory = await mkdtemp('.data/browser-');
       const server = spawn(process.execPath, ['dist/server.js'], {
         env: {
           ...process.env,
-          PORT: '44320',
-          DEMO_PORT: '44321',
+          PORT: port,
+          DEMO_PORT: String(Number(port) + 1),
           FEEDBACK_URL: baseURL,
           FEEDBACK_DATA_DIR: directory,
         },

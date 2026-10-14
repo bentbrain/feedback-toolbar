@@ -1,0 +1,231 @@
+import type { Page } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { test, expect } from './fixtures.js';
+import { projectSchema, threadSchema } from '../src/shared/models.js';
+
+async function fixture(page: Page, baseURL: string | undefined, dark = false) {
+  if (!baseURL) throw new Error('Missing fixture URL.');
+  const website = new URL(baseURL);
+  website.port = String(Number(website.port) + 1);
+  expect(
+    (
+      await page.request.post('/api/auth/sign-up/email', {
+        data: {
+          name: 'Emoji reviewer',
+          email: `${randomUUID()}@example.invalid`,
+          password: randomUUID(),
+        },
+      })
+    ).status(),
+  ).toBe(200);
+  const project = z.object({ project: projectSchema }).parse(
+    await (
+      await page.request.post('/api/projects', {
+        data: {
+          name: 'Emoji website',
+          origins: [website.origin],
+          theme: { mode: dark ? 'dark' : 'light' },
+        },
+      })
+    ).json(),
+  ).project;
+  const thread = z.object({ thread: threadSchema }).parse(
+    await (
+      await page.request.post(`/api/projects/${project.id}/threads`, {
+        data: {
+          body: 'Searchable emoji feedback',
+          context: {
+            url: website.href,
+            viewport: { width: 1280, height: 800 },
+            deployment: null,
+            anchor: {
+              selector: 'h1',
+              feedbackId: null,
+              tag: 'h1',
+              text: 'Heading',
+              label: '',
+              rect: { x: 20, y: 40, width: 120, height: 36 },
+            },
+          },
+        },
+      })
+    ).json(),
+  ).thread;
+  const messageId = thread.messages[0]?.id;
+  if (!messageId) throw new Error('Missing fixture message.');
+  expect(
+    (
+      await page.request.post(`/api/threads/${thread.id}/reactions`, {
+        data: { messageId, emoji: '👨‍👩‍👧‍👦' },
+      })
+    ).status(),
+  ).toBe(200);
+  return { project, thread, website, baseURL };
+}
+
+function capture(page: Page) {
+  const errors: string[] = [];
+  const requests: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('request', (request) => requests.push(request.url()));
+  return { errors, requests };
+}
+
+test('dashboard searches, selects, persists and toggles arbitrary reactions with keyboard and skin tones', async ({
+  page,
+  baseURL,
+}) => {
+  const f = await fixture(page, baseURL);
+  const { errors, requests } = capture(page);
+  await page.goto('/');
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  const dialog = page
+    .getByRole('dialog')
+    .filter({ has: page.getByText('Searchable emoji feedback', { exact: true }) });
+  await expect(dialog.getByRole('button', { name: 'React with 👨‍👩‍👧‍👦', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(requests.filter((url) => url.includes('/emoji-data/'))).toEqual([]);
+  await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
+  const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
+  await expect(search).toBeFocused();
+  let releaseReaction: () => void = () => {
+    throw new Error('Reaction request was not initialized.');
+  };
+  const reactionPending = new Promise<void>((resolve) => {
+    releaseReaction = resolve;
+  });
+  await page.route(`**/api/threads/${f.thread.id}/reactions`, async (route) => {
+    await reactionPending;
+    await route.continue();
+  });
+  await search.fill('butterfly');
+  const butterfly = page.getByRole('gridcell', { name: 'Butterfly', exact: true });
+  await expect(butterfly).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('desktop-picker.png') });
+  await search.press('ArrowDown');
+  await search.press('Enter');
+  await expect(search).toHaveCount(0);
+  const group = dialog.getByRole('group', { name: 'Reactions', exact: true });
+  await expect(group).toHaveAttribute('aria-busy', 'true');
+  await expect(group.getByRole('button', { name: 'Add reaction', exact: true })).toBeDisabled();
+  await expect(group.getByRole('button', { name: 'React with 👍', exact: true })).toBeDisabled();
+  releaseReaction();
+  const reaction = dialog.getByRole('button', { name: 'React with 🦋', exact: true });
+  await expect(reaction).toHaveAttribute('aria-pressed', 'true');
+  await expect(reaction).toContainText('1');
+  await reaction.click();
+  await expect(reaction).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
+  await search.fill('thumbs up');
+  await expect(page.getByRole('gridcell', { name: 'Thumbs up', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^Change skin tone/ }).click();
+  await page.getByRole('button', { name: /^Change skin tone/ }).click();
+  await page.getByRole('button', { name: /^Change skin tone/ }).click();
+  await expect(page.getByRole('gridcell', { name: 'Thumbs up', exact: true })).toHaveText('👍🏽');
+  await page.getByRole('gridcell', { name: 'Thumbs up', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'React with 👍🏽', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.reload();
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'React with 👍🏽', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
+  await search.fill('doesnotexistemoji');
+  await expect(page.getByText('No emoji found.', { exact: true })).toBeVisible();
+  await search.press('Escape');
+  await expect(search).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Add reaction', exact: true })).toBeFocused();
+  expect(requests.some((url) => url.endsWith('/api/emoji-data/v1/en/data.json'))).toBe(true);
+  expect(requests.some((url) => url.endsWith('/api/emoji-data/v1/en/messages.json'))).toBe(true);
+  expect(requests.every((url) => new URL(url).origin === f.baseURL)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('mobile dark toolbar picker fits its iframe, inherits theme and isolates host styles', async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await fixture(page, baseURL, true);
+  const { errors, requests } = capture(page);
+  await page.goto(`${f.website.origin}/?project=${f.project.id}`);
+  await expect
+    .poll(() => page.frames().some((frame) => frame.url().includes('/toolbar?')))
+    .toBe(true);
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar frame missing.');
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await frame.getByText('Searchable emoji feedback', { exact: true }).click();
+  await frame.getByRole('button', { name: 'Add reaction', exact: true }).click();
+  const search = frame.getByRole('textbox', { name: 'Search emojis', exact: true });
+  await expect(search).toBeFocused();
+  await search.fill('rocket');
+  await expect(frame.getByRole('gridcell', { name: 'Rocket', exact: true })).toBeVisible();
+  const popup = frame.locator('[data-slot="popover-content"]');
+  const geometry = await popup.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      width: innerWidth,
+      height: innerHeight,
+      dark: document.documentElement.classList.contains('dark'),
+      background: getComputedStyle(element).backgroundColor,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.width);
+  expect(geometry.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
+  expect(geometry.dark).toBe(true);
+  expect(geometry.background).not.toBe('rgba(0, 0, 0, 0)');
+  await page.screenshot({ path: test.info().outputPath('mobile-picker.png') });
+  await page.addStyleTag({
+    content: 'button,input{font-size:64px!important;background:red!important}',
+  });
+  await expect(search).toHaveCSS('font-size', '12px');
+  await frame.getByRole('gridcell', { name: 'Rocket', exact: true }).click();
+  await expect(frame.getByRole('button', { name: 'React with 🚀', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(requests.every((url) => [f.baseURL, f.website.origin].includes(new URL(url).origin))).toBe(
+    true,
+  );
+  expect(errors).toEqual([]);
+});
+
+test('picker data failure can be retried without breaking the conversation', async ({
+  page,
+  baseURL,
+}) => {
+  await fixture(page, baseURL);
+  await page.route('**/api/emoji-data/v1/en/*.json', (route) => route.abort());
+  await page.goto('/');
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  const add = page.getByRole('button', { name: 'Add reaction', exact: true });
+  await add.click();
+  await expect(page.getByRole('alert')).toContainText('Could not load emojis.');
+  await page.keyboard.press('Escape');
+  await page.unroute('**/api/emoji-data/v1/en/*.json');
+  await add.click();
+  const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
+  await search.fill('butterfly');
+  await page.getByRole('gridcell', { name: 'Butterfly', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'React with 🦋', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+});

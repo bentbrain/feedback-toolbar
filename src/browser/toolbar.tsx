@@ -788,6 +788,7 @@ function Toolbar() {
               thread={active}
               job={jobs.filter((job) => job.threadId === active.id).at(-1)}
               role={role}
+              actorId={auth.user?.id}
               onReply={async (body) => {
                 acceptThread(
                   await api(`/api/threads/${active.id}/messages`, {

@@ -1,7 +1,7 @@
 import type { FeedbackPin } from './pin-protocol.js';
 
 const privateSelector =
-  '[data-feedback-private],input,textarea,select,[contenteditable],[data-feedback-host]';
+  '[data-feedback-private]:not([data-feedback-redact]),input,textarea,select,[contenteditable],[data-feedback-host]';
 
 const paintOnlyProperties = new Set([
   'opacity',

@@ -279,7 +279,7 @@ test('isolated toolbar shares the service session and completes the feedback-to-
   await page.evaluate(() => {
     const editing = document.createElement('section');
     editing.innerHTML =
-      '<div id="editable-empty" contenteditable>Secret draft</div><div id="editable-plain" contenteditable="plaintext-only">Secret plaintext</div><div contenteditable><span id="editable-inherited">Inherited secret</span></div><div id="editable-parent">Public text <div contenteditable>Private child draft</div></div>';
+      '<div id="editable-empty" contenteditable>Secret draft</div><div id="editable-plain" contenteditable="plaintext-only">Secret plaintext</div><div contenteditable><span id="editable-inherited">Inherited secret</span></div><div id="editable-parent">Public text <div contenteditable>Private child draft</div></div><div id="redacted-parent">Public controls <section data-feedback-redact>Unpublished owner metadata</section></div>';
     document.body.prepend(editing);
   });
   for (const id of ['editable-empty', 'editable-plain', 'editable-inherited']) {
@@ -293,6 +293,11 @@ test('isolated toolbar shares the service session and completes the feedback-to-
   await page.locator('#editable-parent').click({ position: { x: 5, y: 5 } });
   await expect(frame.getByText('Public text', { exact: true })).toBeVisible();
   await expect(frame.getByText('Private child draft', { exact: true })).toHaveCount(0);
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await frame.getByRole('button', { name: 'New feedback' }).click();
+  await page.locator('#redacted-parent').click({ position: { x: 5, y: 5 } });
+  await expect(frame.getByText('Public controls', { exact: true })).toBeVisible();
+  await expect(frame.getByText('Unpublished owner metadata', { exact: true })).toBeHidden();
   await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
   await frame.getByRole('button', { name: 'New feedback' }).click();
   await page.locator('[data-feedback-id=hero-button]').click();

@@ -8,6 +8,11 @@ export interface FeedbackPins {
   url: string;
   items: FeedbackPin[];
 }
+export interface FeedbackAnchors {
+  type: 'feedback:anchors';
+  url: string;
+  items: FeedbackPin[];
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -60,5 +65,13 @@ export function feedbackPins(value: unknown): value is FeedbackPins {
     value.items.length <= maxPins &&
     value.items.every((item: unknown) => pin(item)) &&
     new Set(value.items.map((item: FeedbackPin) => item.threadId)).size === value.items.length
+  );
+}
+
+export function feedbackAnchors(value: unknown): value is FeedbackAnchors {
+  return (
+    object(value) &&
+    value.type === 'feedback:anchors' &&
+    feedbackPins({ ...value, type: 'feedback:pins' })
   );
 }

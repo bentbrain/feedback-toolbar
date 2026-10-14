@@ -75,6 +75,7 @@ export class DocumentStore {
     before = Number.MAX_SAFE_INTEGER,
     filters: {
       url?: string | undefined;
+      origin?: string | undefined;
       status?: string | undefined;
       search?: string | undefined;
       ids?: string[] | undefined;
@@ -89,6 +90,11 @@ export class DocumentStore {
     if (filters.url) {
       clauses.push("json_extract(data,'$.context.url')=?");
       params.push(filters.url);
+    }
+    if (filters.origin) {
+      const prefix = `${filters.origin}/`;
+      clauses.push("substr(json_extract(data,'$.context.url'),1,?)=?");
+      params.push(prefix.length, prefix);
     }
     if (filters.status) {
       clauses.push("json_extract(data,'$.status')=?");

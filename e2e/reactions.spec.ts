@@ -230,6 +230,9 @@ test('favourites combine choices from separate tabs without losing updates', asy
     page.getByRole('gridcell', { name: 'Butterfly', exact: true }).click(),
     other.getByRole('gridcell', { name: 'Rocket', exact: true }).click(),
   ]);
+  // Both choices must finish persisting before either picker snapshots favourites.
+  for (const tab of [page, other])
+    await expect(tab.getByRole('button', { name: 'Add reaction', exact: true })).toBeEnabled();
   for (const tab of [page, other]) {
     const add = tab.getByRole('button', { name: 'Add reaction', exact: true });
     await expect(add).toBeEnabled();

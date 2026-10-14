@@ -196,6 +196,180 @@ async function pinMessages(page: Page) {
     });
 }
 
+test('shared element feedback follows its anchor onto a nested route', async ({ page }) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(
+    page,
+    project.id,
+    '[data-feedback-id="hero-heading"]',
+    'Shared heading feedback',
+  );
+  await createThread(page, project.id, '#root-only', 'Root-only feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    history.pushState({}, '', '/owner');
+  });
+  await expect.poll(async () => (await pinMessages(page)).at(-1)?.url).toBe(`${website}/owner`);
+  await expect(
+    frame.getByRole('switch', { name: 'Show feedback pins', exact: true }),
+  ).toBeEnabled();
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await expect(frame.getByText('Shared heading feedback', { exact: true })).toBeVisible();
+  await expect(frame.getByText('Root-only feedback', { exact: true })).toBeHidden();
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await page.screenshot({ path: '.data/review/shared-feedback-after.png' });
+  await clickPin(page, 1);
+  await expect(frame.getByText('Shared heading feedback', { exact: true })).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'Back to feedback', exact: true })).toBeVisible();
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await page.locator('[data-feedback-id="hero-heading"]').evaluate((element) => {
+    element.setAttribute('hidden', '');
+  });
+  await expect(frame.getByText('Shared heading feedback', { exact: true })).toBeHidden();
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await page.locator('[data-feedback-id="hero-heading"]').evaluate((element) => {
+    element.removeAttribute('hidden');
+    element.setAttribute('data-feedback-private', '');
+  });
+  await expect(frame.getByText('Shared heading feedback', { exact: true })).toBeHidden();
+  await page.locator('[data-feedback-id="hero-heading"]').evaluate((element) => {
+    element.removeAttribute('data-feedback-private');
+  });
+  await expect(frame.getByText('Shared heading feedback', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+});
+
+test('shared header SVG feedback loads directly on nested routes without including another origin', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  const otherOrigin = 'https://other.example';
+  expect(
+    (
+      await page.request.patch(`/api/projects/${project.id}`, {
+        data: { origins: [website, otherOrigin] },
+      })
+    ).status(),
+  ).toBe(200);
+  await createThread(page, project.id, 'body > header > svg', 'Shared header icon feedback');
+  await createThread(
+    page,
+    project.id,
+    'body > header > svg',
+    'Other website feedback',
+    `${otherOrigin}/`,
+  );
+  await page.addInitScript((origin) => {
+    // The demo server serves only /. Start the embed on a nested pathname
+    // before any page scripts run, using the real loopback document response.
+    if (location.origin !== origin) return;
+    history.replaceState({}, '', `/owner${location.search}`);
+    document.addEventListener('DOMContentLoaded', () => {
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('viewBox', '0 0 16 16');
+      icon.style.cssText = 'width:22px;height:22px';
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', 'M2 2h12v12H2z');
+      icon.append(path);
+      document.querySelector('body > header')?.append(icon);
+    });
+  }, website);
+  const frame = await openToolbar(page, project.id);
+  await expect(page).toHaveURL(`${website}/owner?project=${project.id}`);
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await expect(frame.getByText('Shared header icon feedback', { exact: true })).toBeVisible();
+  await expect(frame.getByText('Other website feedback', { exact: true })).toBeHidden();
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await frame.getByRole('button', { name: 'Minimize toolbar', exact: true }).click();
+  await expect(page.locator('[data-feedback-host]')).toHaveCSS('height', '56px');
+  await clickPin(page, 1);
+  await expect(frame.getByText('Shared header icon feedback', { exact: true })).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'Back to feedback', exact: true })).toBeVisible();
+});
+
+test('selection keeps an Astro table header cell granular through hover and compose', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const main = document.querySelector('main');
+    if (!main) throw new Error('Main missing');
+    main.innerHTML =
+      '<astro-island style="display:contents"><div><table style="border-collapse:collapse;width:100%;table-layout:fixed"><thead><tr><th>Title</th><th>Published</th><th>Status</th></tr></thead></table></div></astro-island>';
+    main.setAttribute('style', 'padding:24px;padding-top:0;margin-top:0');
+    main.setAttribute('data-feedback-redact', '');
+    main.setAttribute('data-feedback-private', '');
+    for (const cell of main.querySelectorAll('th'))
+      cell.setAttribute('style', 'height:40px;padding:0;text-align:left');
+  });
+  const cell = page.locator('th').nth(1);
+  await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+  await cell.hover();
+  const highlightBounds = () =>
+    page.evaluate(() => {
+      const root: unknown = Reflect.get(window, 'pinTestRoot');
+      if (!(root instanceof ShadowRoot)) throw new Error('Closed test root missing');
+      const highlight = Array.from(root.children).find(
+        (element) => element instanceof HTMLElement && element.style.pointerEvents === 'none',
+      );
+      const rect = highlight?.getBoundingClientRect();
+      return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+    });
+  const bounds = await cell.boundingBox();
+  if (!bounds) throw new Error('Table header cell missing');
+  await expect.poll(highlightBounds).toMatchObject(bounds);
+  await page.screenshot({ path: '.data/review/table-selection.png' });
+  await cell.evaluate((element) => {
+    element.setAttribute('aria-label', 'Unpublished itinerary metadata');
+  });
+  await cell.click();
+  await expect(
+    frame.getByText('astro-island > div > table > thead > tr > th:nth-of-type(2)', { exact: true }),
+  ).toBeVisible();
+  await expect(frame.getByText('[Private element]', { exact: true })).toBeVisible();
+  await expect(frame.getByText('Published', { exact: true })).toBeHidden();
+  await expect.poll(highlightBounds).toMatchObject(bounds);
+  await frame.getByLabel('What would you like to change?').fill('Adjust this column spacing');
+  const posted = page.waitForResponse(
+    (response) => response.url().endsWith('/threads') && response.request().method() === 'POST',
+  );
+  await frame.getByRole('button', { name: 'Post feedback', exact: true }).click();
+  const result = z.object({ thread: threadSchema }).parse(await (await posted).json());
+  expect(result.thread.context.anchor).toMatchObject({
+    tag: 'th',
+    text: '[Private element]',
+    label: '',
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+  await page.locator('body > header').hover();
+  expect(await highlightBounds()).not.toEqual(bounds);
+  await cell.evaluate((element) => {
+    element.setAttribute('data-feedback-private', '');
+  });
+  await cell.hover();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const root: unknown = Reflect.get(window, 'pinTestRoot');
+        if (!(root instanceof ShadowRoot)) throw new Error('Closed test root missing');
+        const highlight = Array.from(root.children).find(
+          (element) => element instanceof HTMLElement && element.style.pointerEvents === 'none',
+        );
+        return highlight ? getComputedStyle(highlight).display : null;
+      }),
+    )
+    .toBe('none');
+});
+
 test('toggle renders isolated accessible pins and click or keyboard opens the matching thread in place', async ({
   page,
 }) => {
@@ -425,7 +599,13 @@ test('pins follow scroll, reflow and resize, reject missing, duplicate and priva
   await createThread(page, project.id, '', 'Unanchored feedback');
   await createThread(page, project.id, 'button', 'Ambiguous feedback');
   await createThread(page, project.id, '.feedback-form input', 'Private feedback');
-  await createThread(page, project.id, 'main', 'Different page feedback', `${website}/other`);
+  await createThread(
+    page,
+    project.id,
+    '#other-page-main',
+    'Different page feedback',
+    `${website}/other`,
+  );
   const frame = await openToolbar(page, project.id);
   await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
   await expect.poll(async () => (await pins(page)).length).toBe(1);

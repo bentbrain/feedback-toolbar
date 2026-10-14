@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { publicJobSchema, threadSchema } from '../shared/models.js';
 import { client } from './client.js';
 import { runnerPolicy } from './runner-policy.js';
+import { resolveRunnerRuntime } from './runner-runtime.js';
 
 const claimSchema = z.object({
   job: publicJobSchema.extend({ snapshot: threadSchema }).nullable(),
@@ -27,14 +28,15 @@ export async function runWorker(options: {
     );
   if (process.platform === 'win32')
     throw new Error('Run the executable adapter in WSL. Native Windows harnesses can use MCP.');
-  const { stdout: version } = await promisify(execFile)('codex', ['--version']);
+  const runtime = await resolveRunnerRuntime();
+  const { stdout: version } = await promisify(execFile)(runtime.executable, ['--version']);
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!match || (Number(match[1]) === 0 && Number(match[2]) < 161))
     throw new Error(
       'The executable adapter requires Codex CLI 0.161.0 or newer for enforced permissions.',
     );
   const connection = await client({ ...options, agent: true });
-  const permissions = runnerPolicy(connection.workspace);
+  const permissions = runnerPolicy(connection.workspace, runtime);
   if (!connection.projectId)
     throw new Error('Run init from this workspace first, or pass --project.');
   if (options.interval < 1000 || options.interval > 3600_000)
@@ -100,7 +102,7 @@ export async function runWorker(options: {
         });
         const log = await open(logFile, 'wx', 0o600);
         const running = spawn(
-          'codex',
+          runtime.executable,
           ['exec', ...permissions.args, '--json', '--output-last-message', resultFile, '-'],
           {
             cwd: connection.workspace,

@@ -11,6 +11,5 @@
     "src/browser/styles.css"
   ],
   "project": ["src/**/*", "scripts/**/*.ts", "tests/**/*.ts", "e2e/**/*.ts", "src/**/*.css"],
-  "ignoreDependencies": [],
-  "ignoreBinaries": ["codex"]
+  "ignoreDependencies": []
 }

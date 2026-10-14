@@ -169,7 +169,9 @@ jobs:
 
   deploy:
     name: Deploy production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      !cancelled() && needs.gate.result == 'success' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: gate
     permissions:
       contents: write

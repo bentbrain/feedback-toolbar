@@ -25,7 +25,12 @@ await build({
 });
 await writeFile(
   `${target}/functions/proxy.func/.vc-config.json`,
-  JSON.stringify({ runtime: 'nodejs24.x', handler: 'index.mjs', launcherType: 'Nodejs' }),
+  JSON.stringify({
+    runtime: 'nodejs24.x',
+    handler: 'index.mjs',
+    launcherType: 'Nodejs',
+    regions: ['syd1'],
+  }),
 );
 if (release) await mkdir(`${target}/static/assets/${release}`, { recursive: true });
 for (const asset of ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'styles.css']) {

@@ -1,6 +1,5 @@
-import { verifyPublishedAssets } from './release-assets.js';
+import { verifyPublishedAssets, waitForDeploymentReady } from './release-assets.js';
 import { readdir } from 'node:fs/promises';
-import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { readRegularFile } from '../src/shared/files.js';
 import { activeServiceOrigin } from '../src/server/proxy-configuration.js';
@@ -32,7 +31,7 @@ if (process.argv.includes('--dry-run')) {
   const token = z.string().min(1).parse(process.env.VERCEL_TOKEN);
   const team = z.string().startsWith('team_').parse(process.env.VERCEL_ORG_ID);
   const project = z.string().startsWith('prj_').parse(process.env.VERCEL_PROJECT_ID);
-  const request = async (path: string, body?: unknown): Promise<unknown> => {
+  const request = async (path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> => {
     const query = new URLSearchParams({ teamId: team });
     if (path === '/v13/deployments') query.set('prebuilt', '1');
     if (path.endsWith('/env')) query.set('upsert', 'true');
@@ -40,7 +39,9 @@ if (process.argv.includes('--dry-run')) {
       method: body === undefined ? 'GET' : 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(60_000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+        : AbortSignal.timeout(60_000),
       redirect: 'error',
     });
     if (!response.ok) throw new Error(`Vercel API ${path} failed (${response.status}).`);
@@ -106,22 +107,13 @@ if (process.argv.includes('--dry-run')) {
     }),
   );
   console.log(`Deployment created: https://${created.url}`);
-  const deadline = Date.now() + 8 * 60_000;
-  let ready = false;
-  while (Date.now() < deadline) {
-    const deployment = deploymentSchema.parse(await request(`/v13/deployments/${created.id}`));
-    if (deployment.readyState === 'READY') {
-      ready = true;
-      break;
-    }
-    if (['ERROR', 'CANCELED'].includes(deployment.readyState))
-      throw new Error(`Vercel deployment ended with ${deployment.readyState}.`);
-    await delay(3000);
-  }
-  if (!ready) throw new Error('Vercel deployment did not become ready within eight minutes.');
+  await waitForDeploymentReady((signal) =>
+    request(`/v13/deployments/${created.id}`, undefined, signal),
+  );
   await verifyPublishedAssets(
     `${output}/static/assets`,
     originSchema.parse(process.env.FEEDBACK_URL),
+    { timeoutMs: 2 * 60_000 },
   );
   console.log(`Production deployment ready and release assets verified: https://${created.url}`);
 }

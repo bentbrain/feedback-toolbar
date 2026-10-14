@@ -136,6 +136,15 @@
   }
 }
 @media (max-width: 1023px) and (max-height: 500px) {
+  [data-slot='sidebar'][data-mobile] {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  [data-mobile] [data-slot='sidebar-content'] {
+    flex: none;
+    overflow-y: visible;
+    padding-bottom: 12px;
+  }
   [data-mobile] [data-slot='sidebar-header'] {
     gap: 12px;
     padding: 12px;

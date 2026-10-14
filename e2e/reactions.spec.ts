@@ -261,3 +261,45 @@ test('picker data failure can be retried without breaking the conversation', asy
   );
   expect(styleErrors).toEqual([]);
 });
+
+test.describe('touch emoji grid', () => {
+  test.use({ hasTouch: true });
+
+  test('unfiltered emoji rows fit the popup when the phone width changes', async ({
+    page,
+    baseURL,
+  }) => {
+    await fixture(page, baseURL);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    await page.getByText('Searchable emoji feedback', { exact: true }).click();
+    await page.getByRole('button', { name: 'Add reaction', exact: true }).click();
+    const popup = page.locator('[data-slot="popover-content"]');
+    const cells = popup.getByRole('gridcell');
+    await expect(cells.first()).toBeVisible();
+    for (const width of [390, 320, 260]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect
+        .poll(() =>
+          cells.evaluateAll((elements) =>
+            elements.flatMap((element) => {
+              const bounds = element.getBoundingClientRect();
+              const viewport = element.closest('[data-slot="emoji-picker-viewport"]');
+              if (!viewport) throw new Error('Emoji viewport missing');
+              const clip = viewport.getBoundingClientRect();
+              return bounds.left < clip.left - 1 ||
+                bounds.right > clip.left + viewport.clientWidth + 1
+                ? [element.getAttribute('aria-label')]
+                : [];
+            }),
+          ),
+        )
+        .toEqual([]);
+      await expect
+        .poll(async () => (await cells.first().boundingBox())?.width)
+        .toBeGreaterThanOrEqual(44);
+    }
+    await cells.first().click();
+    await expect(popup).toBeHidden();
+  });
+});

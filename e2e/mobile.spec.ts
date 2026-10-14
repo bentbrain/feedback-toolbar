@@ -30,9 +30,7 @@ test('sign-in and sign-up fit a small phone and remain reachable in a reduced vi
   await expect(submit).toBeInViewport();
 });
 
-test('project creation stays inside a short viewport with readable fields and reachable actions', async ({
-  page,
-}) => {
+test('project setup and navigation stay reachable on short touch screens', async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 320 });
   expect(
     (
@@ -65,7 +63,23 @@ test('project creation stays inside a short viewport with readable fields and re
   await page.getByRole('button', { name: 'Toggle navigation' }).click();
   const navigation = page.getByRole('dialog', { name: 'Navigation' });
   const scrollArea = navigation.locator('[data-slot="sidebar-content"]');
-  expect((await scrollArea.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  for (const height of [320, 260, 240]) {
+    await page.setViewportSize({ width: 568, height });
+    expect((await scrollArea.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    const feedback = navigation.getByRole('button', { name: 'Feedback', exact: true });
+    await feedback.scrollIntoViewIfNeeded();
+    await expect(feedback).toBeInViewport({ ratio: 1 });
+    await navigation.getByRole('button', { name: 'Account menu' }).scrollIntoViewIfNeeded();
+    await expect(navigation.getByRole('button', { name: 'Account menu' })).toBeInViewport({
+      ratio: 1,
+    });
+  }
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = '24px';
+  });
+  const firstItem = navigation.getByRole('button', { name: 'Feedback', exact: true });
+  await firstItem.scrollIntoViewIfNeeded();
+  await expect(firstItem).toBeInViewport({ ratio: 1 });
   const security = navigation.getByRole('button', { name: 'Account security', exact: true });
   await security.scrollIntoViewIfNeeded();
   await expect(security).toBeInViewport({ ratio: 1 });

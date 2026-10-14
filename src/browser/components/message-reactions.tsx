@@ -27,7 +27,34 @@ function ReactionPicker({
   const [failed, setFailed] = useState(false);
   const errorId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const [columns, setColumns] = useState(8);
   const retrying = useRef(false);
+  useEffect(() => {
+    const picker = pickerRef.current;
+    if (!picker) return;
+    const resize = () => {
+      const viewport = picker.querySelector('[data-slot="emoji-picker-viewport"]');
+      const row = picker.querySelector('[data-slot="emoji-picker-row"]');
+      const emoji = picker.querySelector('[data-slot="emoji-picker-emoji"]');
+      if (!viewport || !row || !emoji) return;
+      const width = parseFloat(getComputedStyle(emoji).width);
+      if (!width) return;
+      const style = getComputedStyle(row);
+      const available =
+        viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      setColumns(Math.max(1, Math.min(8, Math.floor(available / width))));
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(picker);
+    const viewport = picker.querySelector('[data-slot="emoji-picker-viewport"]');
+    if (viewport) observer.observe(viewport);
+    window.addEventListener('resize', resize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', resize);
+    };
+  }, [failed]);
   useEffect(() => {
     if (failed) retryRef.current?.focus();
     else if (retrying.current) {
@@ -64,10 +91,11 @@ function ReactionPicker({
     </div>
   ) : (
     <EmojiPicker
+      ref={pickerRef}
       locale="en"
       emojibaseUrl={`${location.origin}/api/emoji-data/v1`}
       resolveEmojiData={resolveEmojiData}
-      columns={8}
+      columns={columns}
       className="h-[min(342px,var(--available-height))]"
       onEmojiSelect={({ emoji }) => {
         onSelect(emoji);
@@ -77,7 +105,7 @@ function ReactionPicker({
       {favourites.length > 0 ? (
         <div className="shrink-0 border-b p-2">
           <p className="mb-1 px-1 text-xs text-muted-foreground">Favourites</p>
-          <div role="group" aria-label="Favourite emojis" className="flex">
+          <div role="group" aria-label="Favourite emojis" className="flex flex-wrap">
             {favourites.map((emoji) => (
               <Button
                 key={emoji}

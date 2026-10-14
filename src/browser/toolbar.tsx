@@ -618,7 +618,9 @@ function Toolbar() {
     <TooltipProvider>
       <Toaster position="top-center" theme={appliedTheme.mode} />
       {!expanded ? (
-        <div className="m-1 flex h-12 items-center justify-between rounded-lg border bg-card px-2 shadow-sm">
+        <div
+          className={`m-1 flex h-12 items-center justify-between rounded-lg border bg-card shadow-sm ${mini ? 'justify-center' : 'px-2'}`}
+        >
           {mini ? (
             <IconAction
               label="Open feedback"
@@ -662,9 +664,9 @@ function Toolbar() {
           )}
         </div>
       ) : (
-        <section className="m-1 flex h-[calc(100vh-8px)] max-h-[628px] flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
-          <header className="flex items-center justify-between border-b px-5 py-4">
-            <div className="flex items-center gap-2">
+        <section className="m-1 flex h-[calc(100dvh-8px)] max-h-[628px] flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
+          <header className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-3 sm:px-5 sm:py-4">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               {['thread', 'compose'].includes(screen) ? (
                 <IconAction label="Back to feedback" onClick={back}>
                   <ArrowLeft className="size-4" />
@@ -672,9 +674,12 @@ function Toolbar() {
               ) : (
                 <MessageCircle className="size-4 text-primary" />
               )}
-              <div className="text-sm font-medium">
+              <div className="min-w-0 text-sm font-medium">
                 Feedback
-                <p className="mt-0.5 text-[10px] font-normal text-muted-foreground">
+                <p
+                  className="mt-0.5 truncate text-[10px] font-normal text-muted-foreground"
+                  title={projectName}
+                >
                   {projectName}
                 </p>
               </div>
@@ -919,10 +924,12 @@ function Toolbar() {
               </div>
             </>
           )}
-          <footer className="flex shrink-0 items-center justify-between border-t px-5 py-3 text-[10px] text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <span className="size-1.5 rounded-full bg-primary" />
-              {auth?.user?.name ?? ''}
+          <footer className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2 text-[10px] text-muted-foreground sm:px-5 sm:py-3">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="size-1.5 shrink-0 rounded-full bg-primary" />
+              <span className="truncate" data-feedback-content title={auth?.user?.name}>
+                {auth?.user?.name ?? ''}
+              </span>
             </span>
             {auth ? (
               <Button

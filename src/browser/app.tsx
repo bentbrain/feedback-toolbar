@@ -179,10 +179,10 @@ function Auth({
     }
   }
   return (
-    <div className="flex min-h-screen items-center justify-center px-6 py-12">
+    <div className="flex min-h-dvh items-center justify-center px-6 py-6 sm:py-12">
       <section className="w-full max-w-[360px]">
         <Brand />
-        <form onSubmit={(event) => void submit(event)} className="mt-8 grid gap-6">
+        <form onSubmit={(event) => void submit(event)} className="mt-6 grid gap-4 sm:mt-8 sm:gap-6">
           <div>
             <h2 className="text-[28px] font-medium tracking-[-.8px]">
               {signup ? 'Create account' : 'Sign in'}
@@ -309,9 +309,9 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
     void load();
   }, [load]);
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-8 px-6">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-6 px-6 py-6 sm:gap-8 sm:py-12">
       <Brand />
-      <Card className="w-full max-w-md p-7">
+      <Card className="w-full max-w-md break-words p-5 sm:p-7">
         <div className="grid gap-5">
           <p className="eyebrow">Signed in as {user.name}</p>
           <h1 className="text-2xl font-medium tracking-tight">
@@ -1783,7 +1783,7 @@ function DashboardContent({
           if (!open) setActiveId(null);
         }}
       >
-        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px]">
+        <DialogContent className="flex max-h-[min(85dvh,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px]">
           <DialogHeader className="border-b px-5 py-5">
             <DialogTitle className="text-lg">Thread</DialogTitle>
             <DialogDescription className="sr-only">

@@ -253,8 +253,7 @@ test('sidebar toggles by keyboard and keeps mobile navigation scrollable in a sh
       .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
       .toBe(true);
   }
-  const scrollArea = dialog.locator('[data-slot="sidebar-content"]');
-  expect(await scrollArea.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+  expect(await dialog.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
     true,
   );
   await dialog.getByRole('button', { name: 'Account security', exact: true }).click();

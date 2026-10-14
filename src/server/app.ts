@@ -422,14 +422,12 @@ export function createApp(options: Options) {
         );
         if (metadata.kind === 'embed') {
           const session = metadata.browserSessionId
-            ? z
-                .object({ userId: z.string(), expiresAt: z.date() })
-                .safeParse(
-                  await adapter.findOne({
-                    model: 'session',
-                    where: [{ field: 'id', value: metadata.browserSessionId }],
-                  }),
-                )
+            ? z.object({ userId: z.string(), expiresAt: z.date() }).safeParse(
+                await adapter.findOne({
+                  model: 'session',
+                  where: [{ field: 'id', value: metadata.browserSessionId }],
+                }),
+              )
             : null;
           if (
             !session?.success ||

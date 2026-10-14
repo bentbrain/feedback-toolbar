@@ -41,6 +41,13 @@ import { applyTheme, formInput, messageOf, relativeTime, request, rootElement } 
 import { cn } from './lib/utils.js';
 import { Button } from './components/ui/button.js';
 import {
+  Breadcrumb,
+  BreadcrumbList,
+  BreadcrumbItem,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from './components/ui/breadcrumb.js';
+import {
   Sidebar,
   SidebarProvider,
   SidebarHeader,
@@ -1489,15 +1496,25 @@ function DashboardContent({
         <header className="flex min-h-[74px] flex-wrap items-center justify-between gap-3 border-b bg-card/60 px-5 py-4 sm:px-10">
           <div className="flex min-w-0 flex-1 items-center gap-3 text-[11px] text-muted-foreground">
             <SidebarTrigger />
-            <span
-              data-feedback-content
-              className="min-w-0 truncate text-secondary-foreground"
-              title={p?.name}
-            >
-              {p?.name ?? 'Projects'}
-            </span>
-            <span className="shrink-0">/</span>
-            <span className="shrink-0">{navigation.find((item) => item.id === view)?.label}</span>
+            <Breadcrumb className="min-w-0">
+              <BreadcrumbList className="flex-nowrap gap-3 text-[11px]">
+                <BreadcrumbItem className="min-w-0">
+                  <span
+                    data-feedback-content
+                    className="truncate text-secondary-foreground"
+                    title={p?.name}
+                  >
+                    {p?.name ?? 'Projects'}
+                  </span>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator>/</BreadcrumbSeparator>
+                <BreadcrumbItem className="shrink-0">
+                  <BreadcrumbPage className="text-muted-foreground">
+                    {navigation.find((item) => item.id === view)?.label}
+                  </BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
           </div>
           {p ? (
             <Button variant="outline" size="sm" onClick={tryDemo}>

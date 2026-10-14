@@ -160,7 +160,9 @@ async function init() {
       const credential = z.object({ token: z.string(), expiresAt: z.number() }).parse(
         await connection.api(`/api/projects/${project.id}/credentials`, {
           method: 'POST',
-          body: { name: `Local connector · ${workspace.split('/').at(-1) ?? 'workspace'}` },
+          body: {
+            name: `Local connector · ${workspace.split('/').at(-1) ?? 'workspace'}`.slice(0, 80),
+          },
         }),
       );
       await saveCredential(key, credential);

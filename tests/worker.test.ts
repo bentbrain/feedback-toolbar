@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { projectSchema, threadSchema, publicJobSchema } from '../src/shared/models.js';
+import { deviceConnectionSchema, exchangeConnection } from '../src/shared/oauth.js';
 
 void test(
   'Workers runtime authenticates users and atomically completes work through D1',
@@ -193,6 +194,92 @@ void test(
           })
         ).status,
         200,
+      );
+      const setupGrant = deviceConnectionSchema.parse(
+        await call('/api/connections/start', {
+          kind: 'personal',
+          projectId: null,
+          parentOrigin: null,
+        }),
+      );
+      await call('/api/connections/approve', { code: setupGrant.user_code, accept: true });
+      const setupExchange = await exchangeConnection(url, setupGrant.clientId, {
+        deviceCode: setupGrant.device_code,
+      });
+      assert.ok(setupExchange.connection);
+      const setupKey = z
+        .object({ token: z.string() })
+        .parse(
+          await call(
+            `/api/projects/${project.id}/credentials`,
+            { name: 'Local connector · feedback-toolbar' },
+            setupExchange.connection.token,
+          ),
+        );
+      assert.equal(
+        (
+          await fetch(`${url}/api/me`, {
+            headers: { Authorization: `Bearer ${setupKey.token}` },
+          })
+        ).status,
+        200,
+      );
+      await call(
+        `/api/projects/${project.id}/credentials`,
+        { name: 'n'.repeat(80) },
+        setupExchange.connection.token,
+      );
+      assert.equal(
+        (
+          await fetch(`${url}/api/projects/${project.id}/credentials`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${setupExchange.connection.token}`,
+            },
+            body: JSON.stringify({ name: 'n'.repeat(81) }),
+          })
+        ).status,
+        400,
+      );
+      const workspace = `${state}/workspace-${'name'.repeat(24)}`;
+      const credentials = `${state}/cli-credentials`;
+      await mkdir(workspace);
+      await mkdir(credentials, { mode: 0o700 });
+      await writeFile(
+        `${credentials}/credentials.json`,
+        JSON.stringify({ [url]: setupExchange.connection }),
+        { mode: 0o600 },
+      );
+      const cliEnvironment = { ...process.env, FEEDBACK_CONFIG_DIR: credentials };
+      const setup = await run(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          'src/cli/main.ts',
+          'init',
+          '--server',
+          url,
+          '--project',
+          project.id,
+          '--workspace',
+          workspace,
+          '--json',
+        ],
+        { env: cliEnvironment },
+      );
+      assert.equal(
+        z.object({ agentConnected: z.boolean() }).parse(JSON.parse(setup.stdout)).agentConnected,
+        true,
+      );
+      const names = z
+        .object({ credentials: z.array(z.object({ name: z.string() })) })
+        .parse(await call(`/api/projects/${project.id}/credentials`));
+      assert.ok(
+        names.credentials.some(
+          ({ name }) => name.startsWith('Local connector · workspace-') && name.length === 80,
+        ),
       );
       const device = z
         .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })

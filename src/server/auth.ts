@@ -98,6 +98,7 @@ export function createAuthentication(options: AuthenticationOptions) {
       oauthDeviceAuthorization({ verificationUri: `${options.url}/auth` }),
       apiKey({
         defaultPrefix: 'fta_',
+        maximumNameLength: 80,
         enableMetadata: true,
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 * 1000, maxExpiresIn: 30 },
         rateLimit: { enabled: true, timeWindow: 60_000, maxRequests: 240 },

@@ -66,7 +66,7 @@ test('project setup and navigation stay reachable on short touch screens', async
   for (const height of [320, 260, 240]) {
     await page.setViewportSize({ width: 568, height });
     expect((await scrollArea.boundingBox())?.height).toBeGreaterThanOrEqual(44);
-    const feedback = navigation.getByRole('button', { name: 'Feedback', exact: true });
+    const feedback = navigation.getByRole('link', { name: 'Feedback', exact: true });
     await feedback.scrollIntoViewIfNeeded();
     await expect(feedback).toBeInViewport({ ratio: 1 });
     await navigation.getByRole('button', { name: 'Account menu' }).scrollIntoViewIfNeeded();
@@ -77,10 +77,10 @@ test('project setup and navigation stay reachable on short touch screens', async
   await page.evaluate(() => {
     document.documentElement.style.fontSize = '24px';
   });
-  const firstItem = navigation.getByRole('button', { name: 'Feedback', exact: true });
+  const firstItem = navigation.getByRole('link', { name: 'Feedback', exact: true });
   await firstItem.scrollIntoViewIfNeeded();
   await expect(firstItem).toBeInViewport({ ratio: 1 });
-  const security = navigation.getByRole('button', { name: 'Account security', exact: true });
+  const security = navigation.getByRole('link', { name: 'Account security', exact: true });
   await security.scrollIntoViewIfNeeded();
   await expect(security).toBeInViewport({ ratio: 1 });
   await security.click();

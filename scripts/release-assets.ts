@@ -2,12 +2,11 @@ import { mkdir, readdir } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import { releaseFiles, retrieveReleaseArtifacts } from './release-artifacts.js';
+import { releaseAssetPaths, retrieveReleaseArtifacts } from './release-artifacts.js';
 import { originSchema } from '../src/shared/models.js';
 import { readRegularFile } from '../src/shared/files.js';
 
 const versionSchema = z.string().regex(/^[a-f0-9]{40}$/);
-const assets = releaseFiles;
 interface PublicationWait {
   timeoutMs?: number;
   intervalMs?: number;
@@ -157,7 +156,7 @@ export async function verifyPublishedAssets(
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const version = versionSchema.parse(entry.name);
     if (!entry.isDirectory()) throw new Error('Invalid release asset directory.');
-    for (const asset of assets) {
+    for (const asset of await releaseAssetPaths(`${directory}/${version}`)) {
       const expected = (await readRegularFile(`${directory}/${version}/${asset}`)).contents;
       const actual = await download(`${origin}/assets/${version}/${asset}`, wait);
       if (expected.length !== actual.length || !timingSafeEqual(expected, actual))

@@ -14,9 +14,10 @@
     "paths": {
       "@/*": ["./src/browser/*"]
     },
-    "types": ["node"],
+    "types": ["node", "vite/client"],
     "rootDir": ".",
-    "allowJs": true
+    "allowJs": true,
+    "rootDirs": [".", ".react-router/types"]
   },
   "include": [
     "src",
@@ -25,6 +26,9 @@
     "e2e",
     "playwright.config.ts",
     "playwright.theme.config.ts",
-    "eslint.config.js"
+    "eslint.config.js",
+    "vite.config.ts",
+    "react-router.config.ts",
+    ".react-router/types/**/*"
   ]
 }

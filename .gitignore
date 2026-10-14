@@ -21,3 +21,4 @@ coverage/
 .wrangler/
 .dev.vars
 .dev.vars.*
+.react-router/

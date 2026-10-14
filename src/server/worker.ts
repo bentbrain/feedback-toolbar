@@ -5,6 +5,7 @@ import { originSchema } from '../shared/models.js';
 import { digest } from './security.js';
 import { verifiedProxyIp } from './proxy-signature.js';
 import demo from '../../public/demo.html';
+import dashboard from '../../dist/dashboard/client/index.html';
 
 interface Bindings {
   DB: D1Database;
@@ -20,6 +21,11 @@ interface Bindings {
 const applications = new WeakMap<D1Database, Map<string, ReturnType<typeof createApp>>>();
 export default {
   async fetch(request: Request, env: Bindings): Promise<Response> {
+    if (env.ASSET_VERSION && !dashboard.includes(`/assets/${env.ASSET_VERSION}/dashboard-assets/`))
+      return Response.json(
+        { error: 'Dashboard asset base differs from the active release.' },
+        { status: 503 },
+      );
     const url = originSchema.parse(env.FEEDBACK_URL);
     const incoming = new URL(request.url);
     if (incoming.pathname === '/example')
@@ -67,6 +73,7 @@ export default {
       app = createApp({
         store: d1Store(env.DB),
         assetVersion: env.ASSET_VERSION,
+        dashboard,
         url,
         demoUrl: env.DEMO_URL ?? `${incoming.origin}/example`,
         allowSignup: env.FEEDBACK_ALLOW_SIGNUP !== 'false',

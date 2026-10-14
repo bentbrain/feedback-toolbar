@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { build } from 'esbuild';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { compile, optimize } from '@tailwindcss/node';
 import { Scanner } from '@tailwindcss/oxide';
 import { resolve } from 'node:path';
@@ -20,18 +22,6 @@ const sonnerCss = {
   },
 };
 await Promise.all([
-  build({
-    entryPoints: ['src/browser/app.tsx'],
-    bundle: true,
-    outfile: 'dist/app.js',
-    platform: 'browser',
-    format: 'esm',
-    target: 'es2022',
-    sourcemap: true,
-    minify: true,
-    plugins: [sonnerCss],
-    define: { 'process.env.NODE_ENV': '"production"' },
-  }),
   build({
     entryPoints: ['src/browser/toolbar.tsx'],
     bundle: true,
@@ -99,4 +89,27 @@ await writeFile(
   'dist/embed.d.ts',
   `export interface FeedbackOptions { server: string; projectId: string; theme?: { mode?: 'light' | 'dark' | 'system'; accent?: string; radius?: 'square' | 'soft' | 'round'; density?: 'comfortable' | 'compact'; placement?: 'bottom-right' | 'bottom-left' }; deployment?: string; }\nexport declare function mountFeedback(options: FeedbackOptions): { destroy(): void };\n`,
 );
-console.log('Built service, CLI, MCP server, and browser embeds.');
+await promisify(execFile)(process.execPath, ['node_modules/@react-router/dev/bin.cjs', 'build'], {
+  env: process.env,
+  timeout: 120_000,
+}).then(({ stdout, stderr }) => {
+  process.stdout.write(stdout);
+  process.stderr.write(stderr);
+});
+const dashboardAssets = await readdir('dist/dashboard/client/dashboard-assets');
+await writeFile(
+  'dist/browser-assets.json',
+  JSON.stringify(
+    [
+      'toolbar.js',
+      'embed.js',
+      'embed-module.js',
+      'styles.css',
+      ...dashboardAssets.map((file) => `dashboard-assets/${file}`),
+    ],
+    null,
+    2,
+  ),
+);
+await Promise.all(['dist/app.js', 'dist/app.js.map'].map((file) => rm(file, { force: true })));
+console.log('Built dashboard, service, CLI, MCP server, and browser embeds.');

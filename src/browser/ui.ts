@@ -21,6 +21,7 @@ export async function request(
     body?: unknown;
     token?: string;
     headers?: Record<string, string>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<unknown> {
   if (!path.startsWith('/api/') || /[\\#]/.test(path)) throw new Error('Use a feedback API path.');
@@ -42,6 +43,7 @@ export async function request(
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     credentials: options.token ? 'omit' : 'same-origin',
     redirect: 'error',
+    ...(options.signal ? { signal: options.signal } : {}),
   });
   const data: unknown = await response.json();
   if (!response.ok) {

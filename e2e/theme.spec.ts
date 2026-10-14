@@ -194,7 +194,7 @@ test('standalone appearance preview follows system changes and preserves explici
   await page.setViewportSize({ width: 1280, height: 800 });
   await projectFixture(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await page.getByRole('link', { name: 'Appearance', exact: true }).click();
   const preview = page
     .getByText('Could we give this button a little more space?', { exact: true })
     .locator('xpath=ancestor::*[@data-mode][1]');

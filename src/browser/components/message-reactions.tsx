@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { defaultEmojiDataResolver } from 'frimousse';
 import type { EmojiDataResolver } from 'frimousse';
 import { Loader2, SmilePlus } from 'lucide-react';
@@ -12,8 +13,24 @@ import {
 } from './ui/emoji-picker.js';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from './ui/popover.js';
 
-function ReactionPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
+function ReactionPicker({
+  onSelect,
+  retryRef,
+}: {
+  onSelect: (emoji: string) => void;
+  retryRef: RefObject<HTMLButtonElement | null>;
+}) {
   const [failed, setFailed] = useState(false);
+  const errorId = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const retrying = useRef(false);
+  useEffect(() => {
+    if (failed) retryRef.current?.focus();
+    else if (retrying.current) {
+      retrying.current = false;
+      searchRef.current?.focus();
+    }
+  }, [failed, retryRef]);
   const resolveEmojiData = useCallback<EmojiDataResolver>(async (locale, options) => {
     try {
       return await defaultEmojiDataResolver(locale, options);
@@ -23,9 +40,24 @@ function ReactionPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
     }
   }, []);
   return failed ? (
-    <p role="alert" className="p-3 text-xs text-muted-foreground">
-      Could not load emojis. Close and try again.
-    </p>
+    <div className="grid gap-2 p-3">
+      <p id={errorId} role="alert" className="text-xs text-muted-foreground">
+        Could not load emojis.
+      </p>
+      <Button
+        ref={retryRef}
+        type="button"
+        size="sm"
+        variant="outline"
+        aria-describedby={errorId}
+        onClick={() => {
+          retrying.current = true;
+          setFailed(false);
+        }}
+      >
+        Retry
+      </Button>
+    </div>
   ) : (
     <EmojiPicker
       locale="en"
@@ -37,7 +69,7 @@ function ReactionPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
         onSelect(emoji);
       }}
     >
-      <EmojiPickerSearch aria-label="Search emojis" placeholder="Search emojis" />
+      <EmojiPickerSearch ref={searchRef} aria-label="Search emojis" placeholder="Search emojis" />
       <EmojiPickerContent />
       <EmojiPickerFooter />
     </EmojiPicker>
@@ -58,6 +90,7 @@ export function MessageReactions({
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const reacting = useRef(false);
+  const retryRef = useRef<HTMLButtonElement>(null);
   const emojis = [
     ...new Set(['👍', '❤️', '👀', '🎉', ...message.reactions.map((reaction) => reaction.emoji)]),
   ];
@@ -130,12 +163,18 @@ export function MessageReactions({
           )}
         </PopoverTrigger>
         <PopoverContent
+          onFocus={(event) => {
+            // Base UI restores popup focus after the failed search input is removed.
+            if (event.target === event.currentTarget) retryRef.current?.focus();
+          }}
           align="start"
           side="top"
           className="w-[min(288px,var(--available-width))] gap-0 overflow-hidden p-0"
         >
           <PopoverTitle className="sr-only">Add reaction</PopoverTitle>
-          {open ? <ReactionPicker onSelect={(emoji) => void react(emoji)} /> : null}
+          {open ? (
+            <ReactionPicker retryRef={retryRef} onSelect={(emoji) => void react(emoji)} />
+          ) : null}
         </PopoverContent>
       </Popover>
     </div>

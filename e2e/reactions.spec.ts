@@ -75,6 +75,16 @@ function capture(page: Page) {
   return { errors, requests };
 }
 
+// WebKit screenshot preparation injects nonce-free CSS; keep functional CSP checks screenshot-free.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      if (event.effectiveDirective.startsWith('style-src'))
+        console.error(`Blocked stylesheet: ${event.effectiveDirective}`);
+    });
+  });
+});
+
 test('dashboard searches, selects, persists and toggles arbitrary reactions with keyboard and skin tones', async ({
   page,
   baseURL,
@@ -107,7 +117,6 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
   await search.fill('butterfly');
   const butterfly = page.getByRole('gridcell', { name: 'Butterfly', exact: true });
   await expect(butterfly).toBeVisible();
-  await page.screenshot({ path: test.info().outputPath('desktop-picker.png') });
   await search.press('ArrowDown');
   await search.press('Enter');
   await expect(search).toHaveCount(0);
@@ -166,12 +175,19 @@ test('mobile dark toolbar picker fits its iframe, inherits theme and isolates ho
   if (!frame) throw new Error('Toolbar frame missing.');
   await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
   await frame.getByText('Searchable emoji feedback', { exact: true }).click();
-  await frame.getByRole('button', { name: 'Add reaction', exact: true }).click();
+  const add = frame.getByRole('button', { name: 'Add reaction', exact: true });
+  const touch = test.info().project.use.hasTouch;
+  if (touch) await add.tap();
+  else await add.click();
+  const popup = frame.locator('[data-slot="popover-content"]');
   const search = frame.getByRole('textbox', { name: 'Search emojis', exact: true });
+  if (touch) {
+    await expect(popup).toBeFocused();
+    await search.tap();
+  }
   await expect(search).toBeFocused();
   await search.fill('rocket');
   await expect(frame.getByRole('gridcell', { name: 'Rocket', exact: true })).toBeVisible();
-  const popup = frame.locator('[data-slot="popover-content"]');
   const geometry = await popup.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return {
@@ -191,12 +207,13 @@ test('mobile dark toolbar picker fits its iframe, inherits theme and isolates ho
   expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
   expect(geometry.dark).toBe(true);
   expect(geometry.background).not.toBe('rgba(0, 0, 0, 0)');
-  await page.screenshot({ path: test.info().outputPath('mobile-picker.png') });
   await page.addStyleTag({
     content: 'button,input{font-size:64px!important;background:red!important}',
   });
   await expect(search).toHaveCSS('font-size', '12px');
-  await frame.getByRole('gridcell', { name: 'Rocket', exact: true }).click();
+  const rocket = frame.getByRole('gridcell', { name: 'Rocket', exact: true });
+  if (touch) await rocket.tap();
+  else await rocket.click();
   await expect(frame.getByRole('button', { name: 'React with 🚀', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -212,20 +229,35 @@ test('picker data failure can be retried without breaking the conversation', asy
   baseURL,
 }) => {
   await fixture(page, baseURL);
+  const styleErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /Content Security Policy|stylesheet/.test(message.text()))
+      styleErrors.push(message.text());
+  });
   await page.route('**/api/emoji-data/v1/en/*.json', (route) => route.abort());
   await page.goto('/');
   await page.getByText('Searchable emoji feedback', { exact: true }).click();
   const add = page.getByRole('button', { name: 'Add reaction', exact: true });
   await add.click();
   await expect(page.getByRole('alert')).toContainText('Could not load emojis.');
+  const retry = page.getByRole('button', { name: 'Retry', exact: true });
+  await expect(retry).toBeFocused();
   await page.keyboard.press('Escape');
-  await page.unroute('**/api/emoji-data/v1/en/*.json');
+  await expect(add).toBeVisible();
+  await expect(add).toBeFocused();
   await add.click();
+  await expect(page.getByRole('alert')).toContainText('Could not load emojis.');
+  await expect(retry).toBeFocused();
+  await page.unroute('**/api/emoji-data/v1/en/*.json');
+  if (test.info().project.use.hasTouch) await retry.tap();
+  else await retry.click();
   const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
+  await expect(search).toBeFocused();
   await search.fill('butterfly');
   await page.getByRole('gridcell', { name: 'Butterfly', exact: true }).click();
   await expect(page.getByRole('button', { name: 'React with 🦋', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
+  expect(styleErrors).toEqual([]);
 });

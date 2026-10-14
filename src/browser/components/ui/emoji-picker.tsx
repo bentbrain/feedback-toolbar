@@ -81,12 +81,21 @@ function EmojiPickerRow({ children, ...props }: EmojiPickerListRowProps) {
   );
 }
 
-function EmojiPickerEmoji({ emoji, className, ...props }: EmojiPickerListEmojiProps) {
+function EmojiPickerEmoji({
+  emoji,
+  className,
+  onPointerDown,
+  ...props
+}: EmojiPickerListEmojiProps) {
   return (
     <Button
       variant="ghost"
       size="icon-sm"
       {...props}
+      onPointerDown={(event) => {
+        // Cancelling touch pointerdown suppresses WebKit's synthesized click.
+        if (event.pointerType !== 'touch') onPointerDown?.(event);
+      }}
       className={cn(
         'data-[active]:bg-muted flex size-8 items-center justify-center p-0 text-lg',
         className,

@@ -12,6 +12,11 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
+    {
+      name: 'webkit-mobile',
+      testMatch: ['theme.spec.ts', 'reactions.spec.ts'],
+      use: { ...devices['iPhone 13'] },
+    },
     { name: 'chromium', testIgnore: 'theme.spec.ts', use: { ...devices['Desktop Chrome'] } },
     {
       name: 'chromium-native-dark',

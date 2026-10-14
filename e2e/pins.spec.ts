@@ -5,9 +5,11 @@ import { projectSchema, threadSchema } from '../src/shared/models.js';
 import { test, expect } from './pins.fixtures.js';
 
 const website = 'http://localhost:44331';
+const service = new URL(website);
+service.port = String(Number(service.port) - 1);
 
 async function instrument(page: Page) {
-  await page.addInitScript(() => {
+  await page.addInitScript((serviceOrigin) => {
     let root: ShadowRoot | null = null;
     const messages: unknown[] = [];
     const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'attachShadow');
@@ -70,9 +72,11 @@ async function instrument(page: Page) {
     Object.defineProperty(window, 'pinTestRoot', { get: () => root });
     Object.defineProperty(window, 'pinTestMessages', { get: () => messages });
     window.addEventListener('message', (event: MessageEvent<unknown>) => {
+      const frame = root?.querySelector('iframe');
+      if (event.origin !== serviceOrigin || event.source !== frame?.contentWindow) return;
       messages.push(event.data);
     });
-  });
+  }, service.origin);
 }
 
 async function createProject(page: Page) {
@@ -359,18 +363,19 @@ test('forged and oversized messages cannot render pins or open another thread; s
     window.postMessage(message, location.origin);
   }, forged);
   expect(await pins(page)).toEqual([]);
-  await page.route('http://localhost:44330/pin-spoof', (route) =>
+  const spoofUrl = new URL('/pin-spoof', service).href;
+  await page.route(spoofUrl, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'text/html',
       body: '<!doctype html><title>Protocol source fixture</title>',
     }),
   );
-  await page.evaluate(() => {
+  await page.evaluate((url) => {
     const wrongSource = document.createElement('iframe');
-    wrongSource.src = 'http://localhost:44330/pin-spoof';
+    wrongSource.src = url;
     document.body.append(wrongSource);
-  });
+  }, spoofUrl);
   await expect
     .poll(() => page.frames().some((frame) => frame.url().endsWith('/pin-spoof')))
     .toBe(true);

@@ -5,6 +5,11 @@ import type { Theme } from '../src/shared/models.js';
 import { projectSchema } from '../src/shared/models.js';
 import { test, expect } from './fixtures.js';
 
+const serviceOrigin = new URL(`http://localhost:${process.env.FEEDBACK_E2E_PORT ?? '44320'}`)
+  .origin;
+const website = new URL(serviceOrigin);
+website.port = String(Number(website.port) + 1);
+
 type Mode = Theme['mode'];
 async function projectFixture(page: Page, mode: Mode = 'system') {
   const signup = await page.request.post('/api/auth/sign-up/email', {
@@ -16,7 +21,7 @@ async function projectFixture(page: Page, mode: Mode = 'system') {
   });
   expect(signup.status()).toBe(200);
   const created = await page.request.post('/api/projects', {
-    data: { name: 'System theme fixture', origins: ['http://localhost:44321'], theme: { mode } },
+    data: { name: 'System theme fixture', origins: [website.origin], theme: { mode } },
   });
   return z.object({ project: projectSchema }).parse(await created.json()).project;
 }
@@ -27,16 +32,16 @@ async function openToolbar(
   waitVisible = true,
 ): Promise<Frame> {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('http://localhost:44321/');
+  await page.goto(website.href);
   await page.addStyleTag({
     content:
       ':root{color-scheme:light dark}body{background:#fff}@media(prefers-color-scheme:dark){body{background:#000}}',
   });
   await page.evaluate(
-    ({ projectId, override }) => {
+    ({ projectId, override, serviceOrigin, embedUrl }) => {
       window.addEventListener('message', (event: MessageEvent<unknown>) => {
         if (
-          event.origin !== 'http://localhost:44320' ||
+          event.origin !== serviceOrigin ||
           typeof event.data !== 'object' ||
           event.data === null ||
           !('type' in event.data) ||
@@ -48,12 +53,12 @@ async function openToolbar(
           document.documentElement.setAttribute('data-toolbar-theme', JSON.stringify(data.theme));
       });
       const script = document.createElement('script');
-      script.src = 'http://localhost:44320/embed.js';
+      script.src = embedUrl;
       script.dataset.project = projectId;
       if (override) script.dataset.mode = override;
       document.head.append(script);
     },
-    { projectId, override },
+    { projectId, override, serviceOrigin, embedUrl: new URL('/embed.js', serviceOrigin).href },
   );
   await expect
     .poll(() => page.frames().some((frame) => frame.url().includes('/toolbar?')))
@@ -132,10 +137,10 @@ test('system toolbar follows the dark parent when the iframe preference is light
     })
     .toEqual({ mode: 'dark', accent: '#2870ff', radius: 'square' });
   // Neither a different origin nor another window at the registered origin can set the preference.
-  await frame.evaluate(() => {
+  await frame.evaluate((websiteOrigin) => {
     for (const message of [
       { origin: 'https://unregistered.example', source: window.parent },
-      { origin: 'http://localhost:44321', source: window },
+      { origin: websiteOrigin, source: window },
     ]) {
       window.dispatchEvent(
         new MessageEvent('message', {
@@ -144,7 +149,7 @@ test('system toolbar follows the dark parent when the iframe preference is light
         }),
       );
     }
-  });
+  }, website.origin);
   await expectMode(frame, 'dark');
 });
 

@@ -340,7 +340,15 @@ void test('a reset canonical GET can retry without accepting different bytes', a
       request.socket.destroy();
       return;
     }
-    response.end(`${version}:${request.url?.split('/').at(-1) ?? ''}`);
+    response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    const asset = releaseFiles.find((file) => request.url === `/assets/${version}/${file}`);
+    if (!asset) {
+      response.statusCode = 404;
+      response.end('Not found.');
+      return;
+    }
+    response.end(`${version}:${asset}`);
   });
   t.after(() => {
     server.close();

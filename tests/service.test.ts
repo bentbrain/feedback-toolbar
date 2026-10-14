@@ -670,6 +670,35 @@ void test('tenant-scoped pagination retains every thread without disclosing anot
     );
   assert.equal(search.threads.length, 1);
   assert.equal(search.threads[0]?.id, original.id);
+  const byIds = z.object({ threads: z.array(threadSchema) }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/threads?ids=${original.id},page-0&q=spacing`, {
+        cookie: owner.cookie,
+      })
+    ).json(),
+  );
+  assert.deepEqual(
+    byIds.threads.map((thread) => thread.id),
+    [original.id],
+  );
+  assert.equal(
+    (
+      await f.call(
+        `/api/projects/${project.id}/threads?ids=${Array.from({ length: 51 }, () => 'id').join(',')}`,
+        { cookie: owner.cookie },
+      )
+    ).status,
+    400,
+  );
+  const unrelated = z.object({ threads: z.array(threadSchema) }).parse(
+    await (
+      await f.call(`/api/projects/${other.id}/threads?ids=${original.id}`, {
+        cookie: owner.cookie,
+      })
+    ).json(),
+  );
+  assert.equal(unrelated.threads.length, 0);
+
   const otherPage = z
     .object({ threads: z.array(threadSchema) })
     .parse(
@@ -738,6 +767,8 @@ void test('account recovery revokes lost OAuth grants and agent keys while retai
       .parse(await connections.json()).connections[0]?.clientId,
     lost.clientId,
   );
+  const kept = await connect();
+  assert.notEqual(lost.clientId, kept.clientId);
   assert.equal(
     (
       await f.call(`/api/account/connections/${lost.clientId}`, {
@@ -749,6 +780,7 @@ void test('account recovery revokes lost OAuth grants and agent keys while retai
     200,
   );
   assert.equal((await f.call('/api/me', { bearer: lost.access_token })).status, 401);
+  assert.equal((await f.call('/api/me', { bearer: kept.access_token })).status, 200);
   assert.equal(
     (
       await f.call('/api/auth/oauth2/token', {
@@ -774,6 +806,7 @@ void test('account recovery revokes lost OAuth grants and agent keys while retai
     200,
   );
   assert.equal((await f.call('/api/me', { bearer: next.access_token })).status, 401);
+  assert.equal((await f.call('/api/me', { bearer: kept.access_token })).status, 401);
   assert.equal((await f.call('/api/me', { bearer: agent })).status, 401);
   assert.equal((await f.call('/api/me', { cookie: owner.cookie })).status, 200);
 });
@@ -848,4 +881,100 @@ void test('account recovery invalidates approved device codes before redemption 
   );
   assert.equal((await redeem(approved)).status, 400);
   assert.equal((await redeem(await prepare(owner.cookie))).status, 200);
+});
+
+void test('disconnect and revoke-all fence concurrent device redemption and refresh', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const prepare = async () => {
+    const device = z
+      .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+      .parse(
+        await (
+          await f.call('/api/connections/start', {
+            method: 'POST',
+            body: { kind: 'personal', projectId: null, parentOrigin: null },
+          })
+        ).json(),
+      );
+    assert.equal(
+      (
+        await f.call('/api/connections/approve', {
+          method: 'POST',
+          cookie: owner.cookie,
+          body: { code: device.user_code, accept: true },
+        })
+      ).status,
+      200,
+    );
+    return device;
+  };
+  const redeem = (device: { clientId: string; device_code: string }) =>
+    f.call('/api/auth/oauth2/token', {
+      method: 'POST',
+      body: {
+        client_id: device.clientId,
+        device_code: device.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        resource: `${service}/api`,
+      },
+    });
+  const tokens = z.object({ access_token: z.string(), refresh_token: z.string() });
+  const refresh = (clientId: string, refreshToken: string) =>
+    f.call('/api/auth/oauth2/token', {
+      method: 'POST',
+      body: {
+        client_id: clientId,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+        resource: `${service}/api`,
+      },
+    });
+  for (const all of [false, true]) {
+    for (let trial = 0; trial < 6; trial++) {
+      const device = await prepare();
+      const revoke = () =>
+        f.call(all ? '/api/account/revoke-all' : `/api/account/connections/${device.clientId}`, {
+          method: all ? 'POST' : 'DELETE',
+          cookie: owner.cookie,
+          body: {},
+        });
+      const [exchange, revocation] = await Promise.all([redeem(device), revoke()]);
+      assert.equal(revocation.status, 200);
+      if (exchange.ok) {
+        const issued = tokens.parse(await exchange.json());
+        assert.equal((await f.call('/api/me', { bearer: issued.access_token })).status, 401);
+        assert.equal((await refresh(device.clientId, issued.refresh_token)).status, 400);
+      } else assert.equal(exchange.status, 400);
+      const client = await f.store.database.execute({
+        sql: 'SELECT disabled FROM oauthClient WHERE clientId=?',
+        params: [device.clientId],
+      });
+      assert.equal(z.object({ disabled: z.number() }).parse(client.rows[0]).disabled, 1);
+    }
+    const device = await prepare();
+    const issued = tokens.parse(await (await redeem(device)).json());
+    const [renewal, revoked] = await Promise.all([
+      refresh(device.clientId, issued.refresh_token),
+      f.call(all ? '/api/account/revoke-all' : `/api/account/connections/${device.clientId}`, {
+        method: all ? 'POST' : 'DELETE',
+        cookie: owner.cookie,
+        body: {},
+      }),
+    ]);
+    assert.equal(revoked.status, 200);
+    assert.equal((await f.call('/api/me', { bearer: issued.access_token })).status, 401);
+    if (renewal.ok) {
+      const next = tokens.parse(await renewal.json());
+      assert.equal((await f.call('/api/me', { bearer: next.access_token })).status, 401);
+      assert.equal((await refresh(device.clientId, next.refresh_token)).status, 400);
+    } else assert.equal(renewal.status, 400);
+  }
+  const device = await prepare();
+  const issued = tokens.parse(await (await redeem(device)).json());
+  assert.equal((await f.call('/api/me', { bearer: issued.access_token })).status, 200);
 });

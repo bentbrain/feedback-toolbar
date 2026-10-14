@@ -66,10 +66,15 @@ export class DocumentStore {
       url?: string | undefined;
       status?: string | undefined;
       search?: string | undefined;
+      ids?: string[] | undefined;
     } = {},
   ) {
     const clauses = ['kind=?', "json_extract(data,'$.projectId')=?", 'rowid<?'];
     const params: (string | number | null)[] = [kind, projectId, before];
+    if (filters.ids?.length) {
+      clauses.push(`json_extract(data,'$.id') IN (${filters.ids.map(() => '?').join(',')})`);
+      params.push(...filters.ids);
+    }
     if (filters.url) {
       clauses.push("json_extract(data,'$.context.url')=?");
       params.push(filters.url);

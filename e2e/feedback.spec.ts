@@ -220,3 +220,70 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test('filtered dashboard reconciles resolved cached rows while preserving loaded earlier conversations', async ({
+  page,
+}) => {
+  const signup = await page.request.post('/api/auth/sign-up/email', {
+    data: {
+      name: 'Pagination reviewer',
+      email: `${randomUUID()}@example.invalid`,
+      password: randomUUID(),
+    },
+  });
+  expect(signup.status()).toBe(200);
+  const project = z.object({ project: projectSchema }).parse(
+    await (
+      await page.request.post('/api/projects', {
+        data: { name: 'Cached pages', origins: ['http://localhost:44321'] },
+      })
+    ).json(),
+  ).project;
+  const context = {
+    url: 'http://localhost:44321/',
+    viewport: { width: 1280, height: 800 },
+    deployment: null,
+    anchor: {
+      selector: 'button',
+      feedbackId: null,
+      tag: 'button',
+      text: 'Button',
+      label: '',
+      rect: { x: 0, y: 0, width: 100, height: 30 },
+    },
+  };
+  const ids: string[] = [];
+  for (let index = 0; index < 53; index++) {
+    const result = await page.request.post(`/api/projects/${project.id}/threads`, {
+      data: { context, body: `Cached feedback ${index}` },
+    });
+    expect(result.status()).toBe(201);
+    ids.push(z.object({ thread: threadSchema }).parse(await result.json()).thread.id);
+  }
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Open', exact: true }).click();
+  await expect(page.getByText('Cached feedback 0', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Load earlier conversations' }).click();
+  await page.getByText('Cached feedback 0', { exact: true }).click();
+  await page.getByRole('button', { name: 'Resolve', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('Cached feedback 0', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Cached feedback 1', { exact: true })).toBeVisible();
+  // A change outside this dialog must also remove a cached match on the next refresh.
+  const olderId = ids[1];
+  if (!olderId) throw new Error('Earlier thread missing.');
+  await page.request.patch(`/api/threads/${olderId}`, { data: { status: 'resolved' } });
+  await expect(page.getByText('Cached feedback 1', { exact: true })).toHaveCount(0, {
+    timeout: 15_000,
+  });
+  await expect(page.getByText('Cached feedback 2', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Resolved', exact: true }).click();
+  await expect(page.getByText('Cached feedback 0', { exact: true })).toBeVisible();
+  await expect(page.getByText('Cached feedback 1', { exact: true })).toBeVisible();
+  await page.getByText('Cached feedback 0', { exact: true }).click();
+  await page.getByRole('button', { name: 'Reopen', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Resolve', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('Cached feedback 0', { exact: true })).toHaveCount(0);
+});

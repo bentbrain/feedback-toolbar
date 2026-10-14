@@ -1252,6 +1252,11 @@ function Dashboard({
   const [selected, setSelected] = useState(() => localStorage.getItem('feedback-project-v1') ?? '');
   const [view, setView] = useState<View>('feedback');
   const [threads, setThreads] = useState<Thread[]>([]);
+  const cachedThreads = useRef<Thread[]>([]);
+  useEffect(() => {
+    cachedThreads.current = threads;
+  }, [threads]);
+  const [activeDetail, setActiveDetail] = useState<Thread | null>(null);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
   const pagination = useRef<{ projectId: string; before: number | null; criteria: string }>({
     projectId: '',
@@ -1268,7 +1273,8 @@ function Dashboard({
   const [ready, setReady] = useState(false);
   const generation = useRef(0);
   const p = projects.find((item) => item.id === selected) ?? projects[0];
-  const active = threads.find((thread) => thread.id === activeId);
+  const active =
+    activeDetail?.id === activeId ? activeDetail : threads.find((thread) => thread.id === activeId);
   const refresh = useCallback(
     async (preferred?: string) => {
       const version = ++generation.current;
@@ -1299,10 +1305,10 @@ function Dashboard({
           ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
           : null;
         if (current?.thread.projectId === chosen.id) {
-          feedback.threads = [
-            current.thread,
-            ...feedback.threads.filter((thread) => thread.id !== current.thread.id),
-          ];
+          setActiveDetail(current.thread);
+          feedback.threads = feedback.threads.map((thread) =>
+            thread.id === current.thread.id ? current.thread : thread,
+          );
           feedback.jobs = [
             ...feedback.jobs.filter((job) => job.threadId !== current.thread.id),
             ...current.jobs,
@@ -1315,15 +1321,34 @@ function Dashboard({
         ) {
           pagination.current = { projectId: chosen.id, before: feedback.nextBefore, criteria };
           setNextBefore(feedback.nextBefore);
-          setThreads(feedback.threads);
         } else {
-          setThreads((previous) => [
-            ...feedback.threads,
-            ...previous.filter(
-              (thread) => !feedback.threads.some((current) => current.id === thread.id),
+          // Refresh retained pages through the same server filters, including reply-only search.
+          const ids = cachedThreads.current
+            .filter(
+              (thread) =>
+                thread.projectId === chosen.id &&
+                !feedback.threads.some((fresh) => fresh.id === thread.id),
+            )
+            .map((thread) => thread.id);
+          const batches = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) =>
+            ids.slice(index * 50, index * 50 + 50),
+          );
+          const retained = await Promise.all(
+            batches.map(
+              async (batch) =>
+                z
+                  .object({ threads: z.array(threadSchema) })
+                  .parse(
+                    await request(
+                      `/api/projects/${chosen.id}/threads?q=${encodeURIComponent(search)}${filter === 'all' ? '' : `&status=${filter}`}&ids=${encodeURIComponent(batch.join(','))}`,
+                    ),
+                  ).threads,
             ),
-          ]);
+          );
+          if (version !== generation.current) return;
+          feedback.threads.push(...retained.flat());
         }
+        setThreads(feedback.threads);
         setJobs(feedback.jobs);
         setMembers(z.object({ members: memberListSchema }).parse(people).members);
         setAgents(z.object({ credentials: agentListSchema }).parse(connections).credentials);
@@ -1364,7 +1389,7 @@ function Dashboard({
     destination.searchParams.set('project', p.id);
     window.open(destination.href, '_blank', 'noopener');
   };
-  const visible = threads;
+  const visible = threads.filter((thread) => filter === 'all' || thread.status === filter);
   const changeView = (next: View) => {
     setView(next);
     setActiveId(null);
@@ -1383,6 +1408,8 @@ function Dashboard({
               onChange={(value) => {
                 setSelected(value);
                 setActiveId(null);
+                setNextBefore(null);
+                setThreads([]);
               }}
             />
           </div>
@@ -1557,6 +1584,8 @@ function Dashboard({
                       value={search}
                       onChange={(event) => {
                         setActiveId(null);
+                        setNextBefore(null);
+                        setThreads([]);
                         setSearch(event.target.value);
                       }}
                       placeholder="Search feedback…"
@@ -1571,6 +1600,8 @@ function Dashboard({
                     onValueChange={(value) => {
                       if (typeof value === 'string') {
                         setActiveId(null);
+                        setNextBefore(null);
+                        setThreads([]);
                         setFilter(value);
                       }
                     }}
@@ -1660,11 +1691,23 @@ function Dashboard({
                     className="mt-4"
                     onClick={() => {
                       const projectId = p.id;
+                      const criteria = JSON.stringify([search, filter]);
+                      if (
+                        pagination.current.projectId !== projectId ||
+                        pagination.current.criteria !== criteria
+                      )
+                        return;
+                      const version = ++generation.current;
                       void request(
                         `/api/projects/${projectId}/threads?before=${nextBefore}&q=${encodeURIComponent(search)}${filter === 'all' ? '' : `&status=${filter}`}`,
                       )
                         .then((data) => {
-                          if (pagination.current.projectId !== projectId) return;
+                          if (
+                            version !== generation.current ||
+                            pagination.current.projectId !== projectId ||
+                            pagination.current.criteria !== criteria
+                          )
+                            return;
                           const page = z
                             .object({
                               threads: z.array(threadSchema),

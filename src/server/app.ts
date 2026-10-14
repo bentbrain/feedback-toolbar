@@ -129,73 +129,32 @@ export function createApp(options: Options) {
     }
   };
   const connectionClient = async (metadata: z.infer<typeof connectionMetadata>) => {
-    // First-party client configuration is server-owned; no public registration or redirect URLs.
-    const clientId = `feedback_${digest(`${url}:${JSON.stringify(metadata)}`)}`;
+    // Each connection owns a distinct native client, so disabling it fences in-flight issuance.
+    const clientId = `feedback_${randomUUID()}`;
     const adapter = (await auth.$context).adapter;
-    if (
-      !(await adapter.findOne({
-        model: 'oauthClient',
-        where: [{ field: 'clientId', value: clientId }],
-      }))
-    ) {
-      try {
-        await adapter.create({
-          model: 'oauthClient',
-          data: {
-            clientId,
-            name: metadata.kind === 'embed' ? 'Website toolbar' : 'Local CLI / MCP',
-            tokenEndpointAuthMethod: 'none',
-            applicationType: 'native',
-            redirectUris: [],
-            grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'],
-            scopes: [
-              metadata.kind === 'embed' ? 'feedback:project' : 'feedback:account',
-              'offline_access',
-            ],
-            metadata: JSON.stringify(metadata),
-            disabled: false,
-            skipConsent: false,
-            createdAt: new Date(),
-          },
-        });
-      } catch (error) {
-        if (
-          !(await adapter.findOne({
-            model: 'oauthClient',
-            where: [{ field: 'clientId', value: clientId }],
-          }))
-        )
-          throw error;
-      }
-    }
-    const resourceId = `${url}/api`;
-    if (
-      !(await adapter.findOne({
-        model: 'oauthClientResource',
-        where: [
-          { field: 'clientId', value: clientId },
-          { field: 'resourceId', value: resourceId },
+    await adapter.create({
+      model: 'oauthClient',
+      data: {
+        clientId,
+        name: metadata.kind === 'embed' ? 'Website toolbar' : 'Local CLI / MCP',
+        tokenEndpointAuthMethod: 'none',
+        applicationType: 'native',
+        redirectUris: [],
+        grantTypes: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'],
+        scopes: [
+          metadata.kind === 'embed' ? 'feedback:project' : 'feedback:account',
+          'offline_access',
         ],
-      }))
-    ) {
-      try {
-        await adapter.create({
-          model: 'oauthClientResource',
-          data: { clientId, resourceId, createdAt: new Date() },
-        });
-      } catch (error) {
-        if (
-          !(await adapter.findOne({
-            model: 'oauthClientResource',
-            where: [
-              { field: 'clientId', value: clientId },
-              { field: 'resourceId', value: resourceId },
-            ],
-          }))
-        )
-          throw error;
-      }
-    }
+        metadata: JSON.stringify(metadata),
+        disabled: false,
+        skipConsent: false,
+        createdAt: new Date(),
+      },
+    });
+    await adapter.create({
+      model: 'oauthClientResource',
+      data: { clientId, resourceId: `${url}/api`, createdAt: new Date() },
+    });
     return clientId;
   };
   const access = async (
@@ -261,6 +220,12 @@ export function createApp(options: Options) {
       typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
     );
     const project = metadata.projectId ? await access(principal, metadata.projectId) : null;
+    const bound = await store.database.execute({
+      sql: 'UPDATE oauthClient SET userId=? WHERE clientId=? AND disabled=0 AND (userId IS NULL OR userId=?)',
+      params: [principal.userId, deviceRecord.data.clientId, principal.userId],
+    });
+    if (bound.changes !== 1)
+      throw new HttpError(403, 'This connection was revoked or belongs to another account.');
     const device = await auth.api.deviceVerify({ headers, query: { user_code: code } });
     if (device.resource !== `${url}/api`)
       throw new HttpError(403, 'This request belongs to another account or service.');
@@ -393,6 +358,33 @@ export function createApp(options: Options) {
     ];
     if (local && options.allowSignup !== false) allowed.push('/sign-up/email');
     if (local) allowed.push('/sign-in/email');
+    if (path === '/oauth2/token') {
+      const body = await c.req.raw.clone().text();
+      const clientId = c.req.header('content-type')?.startsWith('application/json')
+        ? z.object({ client_id: z.string() }).parse(JSON.parse(body)).client_id
+        : new URLSearchParams(body).get('client_id');
+      const response = await auth.handler(c.req.raw);
+      if (response.ok) {
+        // A client remains disabled even if native issuance consumed the device before revocation.
+        const client = z.object({ disabled: z.number(), userId: z.string().nullable() }).safeParse(
+          (
+            await store.database.execute({
+              sql: 'SELECT disabled,userId FROM oauthClient WHERE clientId=?',
+              params: [clientId],
+            })
+          ).rows[0],
+        );
+        if (!client.success || client.data.disabled !== 0 || !client.data.userId)
+          return c.json(
+            {
+              error: 'invalid_grant',
+              error_description: 'This connection was revoked. Approve a new connection.',
+            },
+            400,
+          );
+      }
+      return response;
+    }
     if (allowed.includes(path) || path === '/callback/github') return auth.handler(c.req.raw);
     return next();
   });
@@ -458,8 +450,8 @@ export function createApp(options: Options) {
     if (c.get('principal').kind !== 'session')
       throw new HttpError(403, 'Manage connections from your browser.');
     const result = await store.database.execute({
-      sql: "SELECT DISTINCT c.clientId,c.name,c.metadata FROM oauthClient c JOIN (SELECT clientId FROM oauthRefreshToken WHERE userId=? AND revoked IS NULL UNION SELECT clientId FROM deviceCode WHERE userId=? AND status='approved') r ON c.clientId=r.clientId LIMIT 200",
-      params: [c.get('user').id, c.get('user').id],
+      sql: 'SELECT clientId,name,metadata FROM oauthClient WHERE userId=? AND disabled=0 ORDER BY createdAt DESC LIMIT 200',
+      params: [c.get('user').id],
     });
     const connections = result.rows.map((value) => {
       const row = z
@@ -479,6 +471,10 @@ export function createApp(options: Options) {
     const userId = c.get('user').id;
     const clientId = c.req.param('clientId');
     await store.database.batch([
+      {
+        sql: 'UPDATE oauthClient SET disabled=1 WHERE userId=? AND clientId=?',
+        params: [userId, clientId],
+      },
       { sql: 'DELETE FROM deviceCode WHERE userId=? AND clientId=?', params: [userId, clientId] },
       {
         sql: 'DELETE FROM oauthAccessToken WHERE userId=? AND clientId=?',
@@ -496,6 +492,7 @@ export function createApp(options: Options) {
       throw new HttpError(403, 'Manage connections from your browser.');
     const userId = c.get('user').id;
     await store.database.batch([
+      { sql: 'UPDATE oauthClient SET disabled=1 WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM deviceCode WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM oauthAccessToken WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM oauthRefreshToken WHERE userId=?', params: [userId] },
@@ -747,7 +744,16 @@ export function createApp(options: Options) {
           new URL(pageUrl).origin !== c.get('principal').parentOrigin))
     )
       throw new HttpError(403, 'Comment page does not belong to this website.');
+    const ids = c.req.query('ids');
     const filters = {
+      ids:
+        ids === undefined
+          ? undefined
+          : z
+              .array(z.string().regex(/^[A-Za-z0-9_-]{1,200}$/))
+              .min(1)
+              .max(50)
+              .parse(ids.split(',')),
       url: pageUrl ? z.url().max(1500).parse(pageUrl) : undefined,
       search: z.string().max(200).optional().parse(c.req.query('q')),
       status: z.enum(['open', 'resolved']).optional().parse(c.req.query('status')),

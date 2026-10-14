@@ -115,6 +115,11 @@ export function createAuthentication(options: AuthenticationOptions) {
               const payload = await getOAuthProviderApi(ctx, oauthOptions).requireActiveAccessToken(
                 ctx.body.token,
               );
+              const client = await getOAuthProviderApi(ctx, oauthOptions).getClient(
+                z.string().parse(payload.client_id),
+              );
+              if (!client?.userId || client.userId !== payload.sub)
+                throw new Error('Invalid connection owner.');
               const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
               if (
                 !audience.includes(`${options.url}/api`) ||

@@ -141,6 +141,58 @@ void test(
       assert.equal(completed.job.status, 'review');
       assert.equal(completed.thread.messages.at(-1)?.kind, 'agent');
       assert.equal(completed.thread.context.url, 'http://localhost:4311/');
+      const device = z
+        .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+        .parse(
+          await call('/api/connections/start', {
+            kind: 'personal',
+            projectId: null,
+            parentOrigin: null,
+          }),
+        );
+      await call('/api/connections/approve', { code: device.user_code, accept: true });
+      const [exchange, revocation] = await Promise.all([
+        fetch(`${url}/api/auth/oauth2/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: url },
+          body: new URLSearchParams({
+            client_id: device.clientId,
+            device_code: device.device_code,
+            grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+            resource: `${url}/api`,
+          }),
+        }),
+        call('/api/account/revoke-all', {}),
+      ]);
+      assert.ok(revocation);
+      if (exchange.ok) {
+        const issued = z
+          .object({ access_token: z.string(), refresh_token: z.string() })
+          .parse(await exchange.json());
+        assert.equal(
+          (
+            await fetch(`${url}/api/me`, {
+              headers: { Authorization: `Bearer ${issued.access_token}` },
+            })
+          ).status,
+          401,
+        );
+        assert.equal(
+          (
+            await fetch(`${url}/api/auth/oauth2/token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: url },
+              body: new URLSearchParams({
+                client_id: device.clientId,
+                grant_type: 'refresh_token',
+                refresh_token: issued.refresh_token,
+                resource: `${url}/api`,
+              }),
+            })
+          ).status,
+          400,
+        );
+      } else assert.equal(exchange.status, 400);
       const example = await fetch(`${url}/example`);
       assert.equal(example.status, 200);
       assert.ok((await example.text()).includes(url));

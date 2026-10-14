@@ -1323,9 +1323,8 @@ function Dashboard({
         <aside className="flex min-w-0 flex-col gap-6 border-b bg-card p-5 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:py-7">
           <Brand />
           <div className="rounded-lg border bg-muted/30 p-3">
-            <p className="eyebrow mb-2 text-[9px]">Project</p>
             <Choice
-              label=""
+              label="Project"
               value={p?.id ?? ''}
               options={projects.map((item) => ({ value: item.id, label: item.name }))}
               onChange={(value) => {

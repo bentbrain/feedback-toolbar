@@ -291,8 +291,13 @@ export function Conversation({
     }
   };
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col', compact && 'text-xs')}>
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+    <div
+      className={cn(
+        'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain',
+        compact && 'text-xs',
+      )}
+    >
+      <div className="min-h-24 flex-1 overflow-y-auto px-5 py-4">
         <div className="mb-5 rounded-lg border bg-muted/40 p-3">
           <code className="block break-all text-[10px] text-primary">
             {thread.context.anchor.selector}
@@ -382,7 +387,7 @@ export function Conversation({
       </div>
       {role !== 'viewer' ? (
         <form
-          className="grid gap-3 border-t bg-card px-5 py-4"
+          className="grid shrink-0 gap-3 border-t bg-card px-5 py-4"
           onSubmit={(event) => {
             event.preventDefault();
             if (draft.trim())
@@ -402,7 +407,7 @@ export function Conversation({
               setDraft(event.target.value);
             }}
             placeholder="Reply…"
-            className="min-h-16 resize-none text-xs"
+            className="max-h-32 min-h-16 resize-none overflow-y-auto text-xs"
             maxLength={8000}
             required
           />

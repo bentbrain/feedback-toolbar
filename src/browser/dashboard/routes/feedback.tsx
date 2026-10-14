@@ -201,7 +201,7 @@ export default function FeedbackRoute() {
           if (!open) setActiveId(null);
         }}
       >
-        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px]">
+        <DialogContent className="flex max-h-[min(85dvh,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px]">
           <DialogHeader className="border-b px-5 py-5">
             <DialogTitle className="text-lg">Thread</DialogTitle>
             <DialogDescription className="sr-only">

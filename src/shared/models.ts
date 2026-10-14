@@ -76,6 +76,9 @@ export const credentialSchema = z.object({
   expiresAt: z.number(),
   createdAt: z.string(),
   parentOrigin: z.string().nullable(),
+  clientId: z.string().optional(),
+  tokenId: z.string().optional(),
+  generation: z.number().int().nonnegative().default(0),
 });
 const anchorSchema = z
   .object({

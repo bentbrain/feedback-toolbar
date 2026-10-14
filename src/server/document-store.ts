@@ -17,6 +17,17 @@ export class DocumentStore {
     readonly database: Database,
     readonly authDatabase: AuthenticationDatabase,
   ) {}
+  async securityGeneration(userId: string): Promise<number> {
+    const row = (
+      await this.database.execute({
+        sql: 'SELECT generation FROM account_security WHERE userId=?',
+        params: [userId],
+      })
+    ).rows[0];
+    return row === undefined
+      ? 0
+      : z.object({ generation: z.number().int().nonnegative() }).parse(row).generation;
+  }
   async get<T>(kind: string, id: string, schema: z.ZodType<T>): Promise<T | undefined> {
     const row = (
       await this.database.execute({

@@ -101,10 +101,13 @@ export function createApp(options: Options) {
         throw new HttpError(429, 'Too many requests. Try again in a minute.');
       if (!result.valid || !result.key)
         throw new HttpError(401, 'Agent connection expired or was revoked.');
-      const principal = requireValue(
-        await store.get('credentials', result.key.id, credentialSchema),
-      );
-      if (principal.userId !== result.key.referenceId || principal.kind !== 'agent')
+      const principal = await store.get('credentials', result.key.id, credentialSchema);
+      if (!principal) throw new HttpError(401, 'Invalid agent connection.');
+      if (
+        principal.userId !== result.key.referenceId ||
+        principal.kind !== 'agent' ||
+        principal.generation !== (await store.securityGeneration(principal.userId))
+      )
         throw new HttpError(401, 'Invalid agent connection.');
       return principal;
     }
@@ -119,6 +122,8 @@ export function createApp(options: Options) {
       return credentialSchema.parse({
         ...metadata,
         id: `oauth:${z.string().parse(payload.client_id)}:${claims.sub}`,
+        clientId: z.string().parse(payload.client_id),
+        tokenId: z.string().parse(payload.tokenId),
         userId: claims.sub,
         name: metadata.kind === 'embed' ? 'Embedded toolbar' : 'CLI / MCP',
         expiresAt: claims.exp * 1000,
@@ -492,6 +497,14 @@ export function createApp(options: Options) {
       throw new HttpError(403, 'Manage connections from your browser.');
     const userId = c.get('user').id;
     await store.database.batch([
+      {
+        sql: 'INSERT INTO account_security(userId,generation) VALUES(?,1) ON CONFLICT(userId) DO UPDATE SET generation=generation+1',
+        params: [userId],
+      },
+      {
+        sql: 'DELETE FROM session WHERE userId=? AND id<>?',
+        params: [userId, c.get('principal').id],
+      },
       { sql: 'UPDATE oauthClient SET disabled=1 WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM deviceCode WHERE userId=?', params: [userId] },
       { sql: 'DELETE FROM oauthAccessToken WHERE userId=?', params: [userId] },
@@ -502,7 +515,6 @@ export function createApp(options: Options) {
         params: [userId],
       },
     ]);
-    await auth.api.revokeOtherSessions({ headers: c.req.raw.headers });
     return c.json({ ok: true });
   });
   app.get('/api/connections/approval', async (c) => {
@@ -684,33 +696,76 @@ export function createApp(options: Options) {
     });
   });
   app.post('/api/projects/:id/credentials', async (c) => {
-    const project = await access(c.get('principal'), c.req.param('id'), true, true);
+    const issuer = c.get('principal');
+    const generation = await store.securityGeneration(issuer.userId);
+    const project = await access(issuer, c.req.param('id'), true, true);
     const input = z
       .object({ name: z.string().trim().min(1).max(80) })
       .strict()
       .parse(await c.req.json());
+    if (
+      issuer.kind !== 'session' &&
+      (issuer.kind !== 'personal' || !issuer.clientId || !issuer.tokenId)
+    )
+      throw new HttpError(403, 'Create agent keys from an authenticated owner connection.');
+    const identity =
+      issuer.kind === 'session'
+        ? {
+            sql: 'EXISTS(SELECT 1 FROM session WHERE id=? AND userId=?)',
+            params: [issuer.id, issuer.userId],
+          }
+        : {
+            sql: 'EXISTS(SELECT 1 FROM oauthAccessToken t JOIN oauthClient c ON c.clientId=t.clientId WHERE t.id=? AND t.clientId=? AND t.userId=? AND t.revoked IS NULL AND c.disabled=0)',
+            params: [requireValue(issuer.tokenId), requireValue(issuer.clientId), issuer.userId],
+          };
     const key = await auth.api.createApiKey({
       body: {
-        userId: c.get('user').id,
+        userId: issuer.userId,
         name: input.name,
         expiresIn: 30 * 24 * 60 * 60,
-        metadata: { projectId: project.id },
+        metadata: { projectId: project.id, generation },
         permissions: { feedback: ['read', 'reply', 'react', 'run'] },
       },
     });
-    const record = credentialSchema.parse({
-      id: key.id,
-      userId: c.get('user').id,
-      kind: 'agent',
-      projectId: project.id,
-      name: input.name,
-      parentOrigin: null,
-      expiresAt: requireValue(key.expiresAt ?? undefined).getTime(),
-      createdAt: key.createdAt.toISOString(),
-    });
-    await store.insert('credentials', record.id, record);
-    await store.audit(project.id, c.get('user').id, 'agent.connected', record.id);
-    return c.json({ token: key.key, expiresAt: record.expiresAt }, 201);
+    try {
+      const current = await authenticate(c.req.raw.headers);
+      if (current.id !== issuer.id)
+        throw new HttpError(401, 'The issuing connection changed. Try again.');
+      const record = credentialSchema.parse({
+        id: key.id,
+        userId: issuer.userId,
+        kind: 'agent',
+        projectId: project.id,
+        name: input.name,
+        parentOrigin: null,
+        generation,
+        expiresAt: requireValue(key.expiresAt ?? undefined).getTime(),
+        createdAt: key.createdAt.toISOString(),
+      });
+      // Commit only while both the account generation and native issuing connection remain live.
+      const committed = await store.database.execute({
+        sql: `INSERT INTO documents(kind,id,data) SELECT 'credentials',?,? WHERE COALESCE((SELECT generation FROM account_security WHERE userId=?),0)=? AND ${identity.sql} AND EXISTS(SELECT 1 FROM documents WHERE kind='members' AND json_extract(data,'$.projectId')=? AND json_extract(data,'$.userId')=? AND json_extract(data,'$.role')='owner')`,
+        params: [
+          record.id,
+          JSON.stringify(record),
+          issuer.userId,
+          generation,
+          ...identity.params,
+          project.id,
+          issuer.userId,
+        ],
+      });
+      if (committed.changes !== 1)
+        throw new HttpError(401, 'Account access changed while creating this key. Try again.');
+      await store.audit(project.id, issuer.userId, 'agent.connected', record.id);
+      return c.json({ token: key.key, expiresAt: record.expiresAt }, 201);
+    } catch (error) {
+      await (
+        await auth.$context
+      ).adapter.delete({ model: 'apikey', where: [{ field: 'id', value: key.id }] });
+      await store.delete('credentials', key.id);
+      throw error;
+    }
   });
   app.delete('/api/projects/:id/credentials/:credentialId', async (c) => {
     const project = await access(c.get('principal'), c.req.param('id'), true, true);

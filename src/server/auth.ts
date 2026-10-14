@@ -51,6 +51,7 @@ export function createAuthentication(options: AuthenticationOptions) {
     loginPage: '/auth',
     consentPage: '/auth',
     disableJwtPlugin: true,
+    storeTokens: 'hashed',
     customAccessTokenClaims: ({ metadata }) => connectionMetadata.parse(metadata),
     customTokenResponseFields: ({ user }) =>
       user
@@ -127,7 +128,23 @@ export function createAuthentication(options: AuthenticationOptions) {
                 payload.cnf
               )
                 throw new Error('Invalid token audience or issuer.');
-              return payload;
+              const provider = getOAuthProviderApi(ctx, oauthOptions);
+              const tokenRecord = z
+                .object({ id: z.string(), clientId: z.string(), userId: z.string() })
+                .parse(
+                  await ctx.context.adapter.findOne({
+                    model: 'oauthAccessToken',
+                    where: [
+                      {
+                        field: 'token',
+                        value: await provider.hashToken(ctx.body.token, 'access_token'),
+                      },
+                    ],
+                  }),
+                );
+              if (tokenRecord.clientId !== payload.client_id || tokenRecord.userId !== payload.sub)
+                throw new Error('Invalid token ownership.');
+              return { ...payload, client_id: tokenRecord.clientId, tokenId: tokenRecord.id };
             },
           ),
         },

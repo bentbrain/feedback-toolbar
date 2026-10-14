@@ -70,16 +70,20 @@ void test(
         await delay(250);
       }
       assert.ok(ready, `Workers runtime did not start: ${diagnostic}`);
+      const password = randomUUID();
       const signup = await fetch(`${url}/api/auth/sign-up/email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Origin: url },
         body: JSON.stringify({
           name: 'Runtime reviewer',
           email: `${randomUUID()}@example.invalid`,
-          password: randomUUID(),
+          password,
         }),
       });
-      assert.equal(signup.status, 200, await signup.text());
+      assert.equal(signup.status, 200);
+      const signupUser = z
+        .object({ user: z.object({ email: z.string() }) })
+        .parse(await signup.json());
       const cookie = signup.headers.get('set-cookie')?.split(';')[0];
       assert.ok(cookie);
       const call = async (path: string, body?: unknown, bearer?: string) => {
@@ -141,6 +145,55 @@ void test(
       assert.equal(completed.job.status, 'review');
       assert.equal(completed.thread.messages.at(-1)?.kind, 'agent');
       assert.equal(completed.thread.context.url, 'http://localhost:4311/');
+      const login = await fetch(`${url}/api/auth/sign-in/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: url },
+        body: JSON.stringify({ email: signupUser.user.email, password }),
+      });
+      assert.equal(login.status, 200);
+      const otherCookie = login.headers.get('set-cookie')?.split(';')[0];
+      assert.ok(otherCookie);
+      const [creation] = await Promise.all([
+        fetch(`${url}/api/projects/${project.id}/credentials`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: otherCookie, Origin: url },
+          body: JSON.stringify({ name: 'Concurrent D1 connector' }),
+        }),
+        call('/api/account/revoke-all', {}),
+      ]);
+      assert.equal(
+        (await fetch(`${url}/api/me`, { headers: { Cookie: otherCookie } })).status,
+        401,
+      );
+      assert.equal((await fetch(`${url}/api/me`, { headers: { Cookie: cookie } })).status, 200);
+      if (creation.status === 201) {
+        const key = z.object({ token: z.string() }).parse(await creation.json()).token;
+        assert.equal(
+          (await fetch(`${url}/api/me`, { headers: { Authorization: `Bearer ${key}` } })).status,
+          401,
+        );
+        assert.equal(
+          (
+            await fetch(`${url}/api/projects/${project.id}/threads`, {
+              headers: { Authorization: `Bearer ${key}` },
+            })
+          ).status,
+          401,
+        );
+      } else assert.equal(creation.status, 401);
+      const recoveredKey = z
+        .object({ token: z.string() })
+        .parse(
+          await call(`/api/projects/${project.id}/credentials`, { name: 'Recovered D1 connector' }),
+        );
+      assert.equal(
+        (
+          await fetch(`${url}/api/me`, {
+            headers: { Authorization: `Bearer ${recoveredKey.token}` },
+          })
+        ).status,
+        200,
+      );
       const device = z
         .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
         .parse(

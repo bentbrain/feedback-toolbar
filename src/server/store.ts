@@ -11,6 +11,7 @@ export class Store extends DocumentStore {
     db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
     db.exec(readFileSync('migrations/0001_feedback.sql', 'utf8'));
     db.exec(readFileSync('migrations/0002_auth.sql', 'utf8'));
+    db.exec(readFileSync('migrations/0003_account_security.sql', 'utf8'));
     const execute = (statement: Statement) => {
       const prepared = db.prepare(statement.sql);
       if (/^SELECT|\bRETURNING\b/i.test(statement.sql)) {

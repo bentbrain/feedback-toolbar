@@ -50,14 +50,15 @@ function fixture() {
     });
   async function account(name = 'Owner') {
     const email = `${token()}@example.invalid`;
+    const password = token();
     const response = await call('/api/auth/sign-up/email', {
       method: 'POST',
-      body: { name, email, password: token() },
+      body: { name, email, password },
     });
     assert.equal(response.status, 200);
     const cookie = response.headers.get('set-cookie')?.split(';')[0];
     assert.ok(cookie);
-    return { email, cookie };
+    return { email, cookie, password };
   }
   async function project(cookie: string, key?: string) {
     const response = await call('/api/projects', {
@@ -977,4 +978,152 @@ void test('disconnect and revoke-all fence concurrent device redemption and refr
   const device = await prepare();
   const issued = tokens.parse(await (await redeem(device)).json());
   assert.equal((await f.call('/api/me', { bearer: issued.access_token })).status, 200);
+});
+
+void test('account recovery fences concurrent key issuance from another browser and retains the recovery browser', async (t) => {
+  for (let trial = 0; trial < 12; trial++) {
+    const f = fixture();
+    t.after(async () => {
+      await f.ready;
+      f.store.close();
+    });
+    const owner = await f.account();
+    const project = await f.project(owner.cookie);
+    const login = await f.call('/api/auth/sign-in/email', {
+      method: 'POST',
+      body: { email: owner.email, password: owner.password },
+    });
+    assert.equal(login.status, 200);
+    const otherCookie = login.headers.get('set-cookie')?.split(';')[0];
+    assert.ok(otherCookie);
+    const [creation, recovery] = await Promise.all([
+      f.call(`/api/projects/${project.id}/credentials`, {
+        method: 'POST',
+        cookie: otherCookie,
+        body: { name: 'Concurrent connector' },
+      }),
+      f.call('/api/account/revoke-all', { method: 'POST', cookie: owner.cookie, body: {} }),
+    ]);
+    assert.equal(recovery.status, 200);
+    assert.equal((await f.call('/api/me', { cookie: otherCookie })).status, 401);
+    assert.equal((await f.call('/api/me', { cookie: owner.cookie })).status, 200);
+    if (creation.status === 201) {
+      const key = z.object({ token: z.string() }).parse(await creation.json()).token;
+      assert.equal((await f.call('/api/me', { bearer: key })).status, 401);
+      assert.equal(
+        (await f.call(`/api/projects/${project.id}/threads`, { bearer: key })).status,
+        401,
+      );
+    } else assert.equal(creation.status, 401);
+    assert.equal(
+      (
+        await f.store.database.execute({
+          sql: 'SELECT id FROM apikey WHERE referenceId=?',
+          params: [project.createdBy],
+        })
+      ).rows.length,
+      0,
+    );
+    const fresh = await f.agent(owner.cookie, project.id);
+    assert.equal((await f.call('/api/me', { bearer: fresh })).status, 200);
+  }
+});
+
+void test('agent-key permission generations reject stale records even if native issuance finished after recovery', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const key = await f.agent(owner.cookie, project.id);
+  const userId = project.createdBy;
+  const principal = (await f.store.query('credentials', credentialSchema, { userId }))[0];
+  assert.ok(principal);
+  // Simulate a late native key that escaped the deletion window; its old generation stays fenced.
+  await f.store.database.execute({
+    sql: 'INSERT INTO account_security(userId,generation) VALUES(?,1) ON CONFLICT(userId) DO UPDATE SET generation=generation+1',
+    params: [userId],
+  });
+  assert.equal((await f.call('/api/me', { bearer: key })).status, 401);
+  assert.equal((await f.call(`/api/projects/${project.id}/threads`, { bearer: key })).status, 401);
+  assert.equal((await f.store.get('credentials', principal.id, credentialSchema))?.generation, 0);
+  const next = await f.agent(owner.cookie, project.id);
+  assert.equal((await f.call('/api/me', { bearer: next })).status, 200);
+});
+
+void test('native OAuth token revocation prevents concurrent delegation to a fresh agent key', async (t) => {
+  for (let trial = 0; trial < 6; trial++) {
+    const f = fixture();
+    t.after(async () => {
+      await f.ready;
+      f.store.close();
+    });
+    const owner = await f.account();
+    const project = await f.project(owner.cookie);
+    const device = z
+      .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+      .parse(
+        await (
+          await f.call('/api/connections/start', {
+            method: 'POST',
+            body: { kind: 'personal', projectId: null, parentOrigin: null },
+          })
+        ).json(),
+      );
+    await f.call('/api/connections/approve', {
+      method: 'POST',
+      cookie: owner.cookie,
+      body: { code: device.user_code, accept: true },
+    });
+    const connection = z.object({ access_token: z.string(), refresh_token: z.string() }).parse(
+      await (
+        await f.call('/api/auth/oauth2/token', {
+          method: 'POST',
+          body: {
+            client_id: device.clientId,
+            device_code: device.device_code,
+            grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+            resource: `${service}/api`,
+          },
+        })
+      ).json(),
+    );
+    const existing = await f.call(`/api/projects/${project.id}/credentials`, {
+      method: 'POST',
+      bearer: connection.access_token,
+      body: { name: 'Existing CLI connector' },
+    });
+    assert.equal(existing.status, 201);
+    const existingKey = z.object({ token: z.string() }).parse(await existing.json()).token;
+    assert.equal((await f.call('/api/me', { bearer: existingKey })).status, 200);
+    const [creation, revocation] = await Promise.all([
+      f.call(`/api/projects/${project.id}/credentials`, {
+        method: 'POST',
+        bearer: connection.access_token,
+        body: { name: 'Revoked OAuth connector' },
+      }),
+      f.call('/api/auth/oauth2/revoke', {
+        method: 'POST',
+        body: {
+          client_id: device.clientId,
+          token: connection.refresh_token,
+          token_type_hint: 'refresh_token',
+        },
+      }),
+    ]);
+    assert.equal(revocation.status, 200);
+    assert.equal(creation.status, 401);
+    assert.equal((await f.call('/api/me', { bearer: existingKey })).status, 200);
+    assert.equal(
+      (
+        await f.store.database.execute({
+          sql: 'SELECT id FROM apikey WHERE referenceId=?',
+          params: [project.createdBy],
+        })
+      ).rows.length,
+      1,
+    );
+  }
 });

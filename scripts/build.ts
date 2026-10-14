@@ -81,7 +81,18 @@ const compiler = await compile(await readFile('src/browser/styles.css', 'utf8'),
   },
 });
 const scanner = new Scanner({ sources: compiler.sources });
-await writeFile('dist/styles.css', optimize(compiler.build(scanner.scan()), { minify: true }).code);
+const font = await readFile(
+  new URL(import.meta.resolve('@fontsource/geist-mono/files/geist-mono-latin-400-normal.woff2')),
+);
+const fontLicense = await readFile(
+  new URL(import.meta.resolve('@fontsource/geist-mono/LICENSE')),
+  'utf8',
+);
+const fontFace = `@font-face{font-family:'Geist Mono';font-style:normal;font-weight:400;font-display:swap;src:url(data:font/woff2;base64,${font.toString('base64')}) format('woff2');}`;
+await writeFile(
+  'dist/styles.css',
+  `/*! ${fontLicense} */\n${optimize(`${fontFace}${compiler.build(scanner.scan())}`, { minify: true }).code}`,
+);
 await writeFile('dist/server.js', "import './server/main.js';\n");
 await writeFile('dist/cli.js', "#!/usr/bin/env node\nimport './cli/main.js';\n", { mode: 0o755 });
 await writeFile(

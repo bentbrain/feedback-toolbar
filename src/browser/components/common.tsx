@@ -33,7 +33,7 @@ export function Brand({ small = false }: { small?: boolean }) {
       >
         <MessageCircle className="size-4" />
       </span>
-      Feedback
+      toolbar.bent.build
     </div>
   );
 }
@@ -65,14 +65,16 @@ export function PageHeading({
   children,
 }: {
   title: string;
-  description: string;
+  description?: string;
   children?: ReactNode;
 }) {
   return (
     <div className="mb-7 flex flex-wrap items-start justify-between gap-4">
       <div>
         <h1 className="text-[28px] font-medium tracking-[-1px] sm:text-[30px]">{title}</h1>
-        <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{description}</p>
+        {description ? (
+          <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{description}</p>
+        ) : null}
       </div>
       {children}
     </div>
@@ -106,7 +108,7 @@ export function Empty({
   symbol,
 }: {
   title: string;
-  description: string;
+  description?: string;
   children?: ReactNode;
   symbol?: ReactNode;
 }) {
@@ -116,7 +118,9 @@ export function Empty({
         {symbol ?? <MessageCircle className="size-5" />}
       </div>
       <h3 className="text-sm font-medium">{title}</h3>
-      <p className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</p>
+      {description ? (
+        <p className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</p>
+      ) : null}
       {children}
     </div>
   );
@@ -224,37 +228,6 @@ export function JobBadge({ job }: { job: Work }) {
     </Badge>
   );
 }
-export function MiniWebsite() {
-  return (
-    <div aria-hidden="true" className="relative mx-auto w-full max-w-[290px] pb-7">
-      <div className="rounded-xl border border-[#d8dfcf] bg-white p-3 shadow-sm">
-        <div className="mb-5 flex gap-1 border-b pb-2">
-          {[1, 2, 3].map((item) => (
-            <i key={item} className="size-1 rounded-full bg-[#dbe2d1]" />
-          ))}
-        </div>
-        <div className="mx-2">
-          <div className="mb-2 h-2 w-3/4 rounded bg-[#e7eddd]" />
-          <div className="h-2 w-1/2 rounded bg-[#edf1e6]" />
-          <div className="mb-2 mt-5 flex gap-2">
-            {[1, 2, 3].map((item) => (
-              <div key={item} className="h-12 flex-1 rounded bg-[#f0f3e9]" />
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="absolute -bottom-0 right-0 flex items-center gap-2 rounded-xl border bg-white px-3 py-3 shadow-sm">
-        <div className="grid size-7 place-items-center rounded-full bg-secondary text-secondary-foreground">
-          <MessageCircle className="size-3" />
-        </div>
-        <div className="text-[10px]">
-          <strong className="font-medium text-[#60774b]">Every detail, a conversation.</strong>
-          <p className="mt-1 text-[9px] text-[#96a187]">Feedback, right where it belongs.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
 export function Conversation({
   thread,
   job,
@@ -298,7 +271,10 @@ export function Conversation({
           <code className="block break-all text-[10px] text-primary">
             {thread.context.anchor.selector}
           </code>
-          <p className="mt-2 line-clamp-2 text-[11px] leading-5 text-muted-foreground">
+          <p
+            data-feedback-content
+            className="mt-2 line-clamp-2 text-[11px] leading-5 text-muted-foreground"
+          >
             {thread.context.anchor.text || thread.context.anchor.tag}
           </p>
           {onHighlight ? (
@@ -322,7 +298,9 @@ export function Conversation({
             <Person name={message.author} agent={message.kind === 'agent'} small />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <strong className="font-medium">{message.author}</strong>
+                <strong data-feedback-content className="font-medium">
+                  {message.author}
+                </strong>
                 {message.kind === 'agent' ? (
                   <Badge variant="secondary" className="text-[9px]">
                     Agent
@@ -332,7 +310,10 @@ export function Conversation({
                   {relativeTime(message.createdAt)}
                 </time>
               </div>
-              <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-6">
+              <p
+                data-feedback-content
+                className="mt-2 whitespace-pre-wrap break-words text-xs leading-6"
+              >
                 {message.body}
               </p>
               <div className="mt-2 flex gap-1">
@@ -365,15 +346,17 @@ export function Conversation({
             {job.status === 'review' &&
             job.result &&
             !thread.messages.some((message) => message.id === job.id) ? (
-              <p className="whitespace-pre-wrap text-xs leading-6">{job.result}</p>
+              <p data-feedback-content className="whitespace-pre-wrap text-xs leading-6">
+                {job.result}
+              </p>
             ) : null}
             <p className="text-[11px] leading-5 text-muted-foreground">
               {job.status === 'queued'
-                ? 'Waiting for your local connector. Your request is saved.'
+                ? 'Queued. Waiting for the agent.'
                 : job.status === 'running'
                   ? (job.leaseExpiresAt ?? 0) < Date.now()
                     ? 'The runner lost connection. Check its local run record before cancelling or requesting a retry.'
-                    : 'Your agent is working on this feedback.'
+                    : 'Agent running.'
                   : job.status === 'review'
                     ? 'Review the proposed change before resolving this thread.'
                     : job.status === 'failed' && job.result
@@ -404,7 +387,7 @@ export function Conversation({
             onChange={(event) => {
               setDraft(event.target.value);
             }}
-            placeholder="Reply to the conversation…"
+            placeholder="Reply…"
             className="min-h-16 resize-none text-xs"
             maxLength={8000}
             required

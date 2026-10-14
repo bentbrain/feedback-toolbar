@@ -319,7 +319,7 @@ export function createApp(options: Options) {
     c.header('X-Request-ID', requestId);
     c.header(
       'Content-Security-Policy',
-      `default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
     );
     if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(c.req.method)) {
       const origin = c.req.header('Origin');
@@ -1151,18 +1151,16 @@ export function createApp(options: Options) {
       throw new HttpError(403, 'This website is not registered for the toolbar.');
     c.header(
       'Content-Security-Policy',
-      `default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${c.get('nonce')}'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors ${parentOrigin}; base-uri 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${c.get('nonce')}'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors ${parentOrigin}; base-uri 'none'; form-action 'self'`,
     );
     return c.html(html('Feedback toolbar', 'toolbar.js', 'styles.css', c.get('nonce')));
   });
-  app.get('/', (c) =>
-    c.html(
-      html('Feedback · Your website, in conversation', 'app.js', 'styles.css', c.get('nonce')),
-    ),
-  );
+  app.get('/', (c) => c.html(html('toolbar.bent.build', 'app.js', 'styles.css', c.get('nonce'))));
   app.get('/auth', (c) =>
     c.html(html('Sign in · Feedback', 'app.js', 'styles.css', c.get('nonce'))),
   );
-  app.get('/health', (c) => c.json({ ok: true, assetVersion: options.assetVersion ?? null }));
+  app.get('/health', (c) =>
+    c.json({ ok: true, assetVersion: options.assetVersion ?? null, serviceOrigin: url }),
+  );
   return app;
 }

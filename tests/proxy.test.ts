@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { retainActiveAssets, verifyPublishedAssets } from '../scripts/release-assets.js';
 import { token } from '../src/server/security.js';
 import { signProxyRequest, verifiedProxyIp } from '../src/server/proxy-signature.js';
 
@@ -38,7 +42,7 @@ void test('proxy identity requires an authentic signature bound to IP, method, p
 });
 
 void test('the Vercel function replaces forged visitor headers and preserves redirects and cookies', async (t) => {
-  const { createServer } = await import('node:http');
+  const { createServer, request: send } = await import('node:http');
   const { Hono } = await import('hono');
   const { serve } = await import('@hono/node-server');
   const { z } = await import('zod');
@@ -46,8 +50,29 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   const secret = token();
   const previousSecret = process.env.FEEDBACK_PROXY_SECRET;
   const previousOrigin = process.env.FEEDBACK_API_ORIGIN;
+  const previousService = process.env.FEEDBACK_URL;
+  const previousLegacy = process.env.FEEDBACK_PREVIOUS_URL;
   const backend = new Hono();
   let requests = 0;
+  let activeOrigin = '';
+  let activeVersion = '1'.repeat(40);
+  const published = new Map<string, string>();
+  backend.get('/health', async (c) => {
+    assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
+    return c.json({ ok: true, assetVersion: activeVersion, serviceOrigin: activeOrigin });
+  });
+  backend.get('/api/config', async (c) => {
+    assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
+    assert.equal(c.req.header('Authorization'), undefined);
+    assert.equal(c.req.header('Cookie'), undefined);
+    return c.json({ url: activeOrigin });
+  });
+  backend.post('/api/mutate', async (c) => {
+    requests++;
+    assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
+    if (c.req.header('Origin') !== activeOrigin) return c.json({ error: 'Wrong origin.' }, 403);
+    return c.json({ ok: true });
+  });
   backend.all('*', async (c) => {
     requests++;
     assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
@@ -61,6 +86,13 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   process.env.FEEDBACK_API_ORIGIN = `http://127.0.0.1:${z.object({ port: z.number() }).parse(api.address()).port}`;
   process.env.FEEDBACK_PROXY_SECRET = secret;
   const server = createServer((req, res) => {
+    // The fixture models Vercel's trusted ingress and static asset routing.
+    req.headers['x-vercel-forwarded-for'] = '203.0.113.44';
+    const asset = published.get(req.url ?? '');
+    if (asset !== undefined) {
+      res.end(asset);
+      return;
+    }
     void proxy(req, res);
   });
   await new Promise<void>((resolve) => {
@@ -69,12 +101,19 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   t.after(() => {
     server.close();
     api.close();
+    if (previousLegacy === undefined) delete process.env.FEEDBACK_PREVIOUS_URL;
+    else process.env.FEEDBACK_PREVIOUS_URL = previousLegacy;
+    if (previousService === undefined) delete process.env.FEEDBACK_URL;
+    else process.env.FEEDBACK_URL = previousService;
     if (previousSecret === undefined) delete process.env.FEEDBACK_PROXY_SECRET;
     else process.env.FEEDBACK_PROXY_SECRET = previousSecret;
     if (previousOrigin === undefined) delete process.env.FEEDBACK_API_ORIGIN;
     else process.env.FEEDBACK_API_ORIGIN = previousOrigin;
   });
   const origin = `http://127.0.0.1:${z.object({ port: z.number() }).parse(server.address()).port}`;
+  activeOrigin = origin;
+  process.env.FEEDBACK_URL = 'https://toolbar.example';
+  process.env.FEEDBACK_PREVIOUS_URL = origin;
   const headers = {
     'x-vercel-forwarded-for': '203.0.113.44',
     'x-feedback-client-ip': '203.0.113.99',
@@ -95,4 +134,88 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   });
   assert.equal(large.status, 413);
   assert.equal(requests, 1);
+  const publicRequest = async (path: string, method = 'GET') => {
+    const response = await new Promise<import('node:http').IncomingMessage>((resolve, reject) => {
+      const request = send(
+        `${origin}${path}`,
+        {
+          method,
+          headers: {
+            ...headers,
+            Host: 'toolbar.example',
+            Origin: method === 'POST' ? 'https://toolbar.example' : headers.Origin,
+            'x-forwarded-proto': 'https',
+          },
+        },
+        (response) => {
+          response.resume();
+          resolve(response);
+        },
+      );
+      request.on('error', reject);
+      request.end(method === 'POST' ? '{}' : undefined);
+    });
+    return { status: response.statusCode, location: response.headers.location };
+  };
+  // Publishing the new frontend cannot enable its host until the Worker changes origins.
+  for (let interruptedAttempt = 0; interruptedAttempt < 2; interruptedAttempt++) {
+    const previous = await fetch(`${origin}/api/mutate`, {
+      method: 'POST',
+      headers: { ...headers, Origin: origin },
+      body: '{}',
+    });
+    assert.equal(previous.status, 200);
+    const premature = await publicRequest('/api/mutate', 'POST');
+    assert.equal(premature.status, 403);
+  }
+  // A retried deployment prepares fresh retained assets through a noncanonical alias.
+  activeOrigin = 'https://previous.example';
+  process.env.FEEDBACK_PREVIOUS_URL = activeOrigin;
+  const retryDirectory = await mkdtemp(join(tmpdir(), 'feedback-cutover-retry-'));
+  t.after(() => rm(retryDirectory, { recursive: true, force: true }));
+  const nextVersion = '2'.repeat(40);
+  const files = ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'styles.css'];
+  const retrieve = async (version: string, destination: string) => {
+    assert.equal(version, activeVersion);
+    for (const file of files) await writeFile(`${destination}/${file}`, `${version}:${file}`);
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await rm(retryDirectory, { recursive: true, force: true });
+    await mkdir(`${retryDirectory}/${nextVersion}`, { recursive: true });
+    for (const file of files)
+      await writeFile(`${retryDirectory}/${nextVersion}/${file}`, `${nextVersion}:${file}`);
+    await retainActiveAssets(retryDirectory, origin, nextVersion, retrieve);
+    for (const version of [activeVersion, nextVersion])
+      for (const file of files) published.set(`/assets/${version}/${file}`, `${version}:${file}`);
+    await verifyPublishedAssets(retryDirectory, origin);
+    const running = await fetch(`${origin}/health`, { redirect: 'error' });
+    assert.equal(running.status, 200);
+    assert.equal(
+      z.object({ assetVersion: z.string() }).parse(await running.json()).assetVersion,
+      activeVersion,
+    );
+  }
+  activeVersion = nextVersion;
+  activeOrigin = 'https://toolbar.example';
+  // The adapter sees an HTTP socket; the public canonical HTTPS Host must still work.
+  const activated = await publicRequest('/api/mutate', 'POST');
+  assert.equal(activated.status, 200);
+  const canonicalGet = await publicRequest('/auth');
+  assert.equal(canonicalGet.status, 302);
+  assert.equal(canonicalGet.location, 'https://github.com/login');
+  const migrated = await fetch(`${origin}/auth?user_code=fixture`, { headers, redirect: 'manual' });
+  assert.equal(migrated.status, 307);
+  assert.equal(migrated.headers.get('location'), 'https://toolbar.example/auth?user_code=fixture');
+  const rejected = await fetch(`${origin}/api/auth/sign-in/social`, {
+    method: 'POST',
+    headers,
+    body: '{}',
+  });
+  assert.equal(rejected.status, 403);
+  assert.equal(requests, 5);
+  activeOrigin = 'https://unregistered.example';
+  const unsafe = await fetch(`${origin}/auth`, { headers, redirect: 'manual' });
+  assert.equal(unsafe.status, 502);
+  assert.equal(unsafe.headers.get('location'), null);
+  assert.equal(requests, 5);
 });

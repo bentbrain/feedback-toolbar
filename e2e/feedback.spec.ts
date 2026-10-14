@@ -1,28 +1,182 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator } from '@playwright/test';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { projectSchema, publicJobSchema, threadSchema } from '../src/shared/models.js';
 
+async function textContrast(element: Locator) {
+  return element.evaluate((element) => {
+    interface Color {
+      red: number;
+      green: number;
+      blue: number;
+      alpha: number;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('Contrast color resolver is unavailable.');
+    const resolveColor = (color: string): Color => {
+      if (!CSS.supports('color', color)) throw new Error(`Unexpected rendered color: ${color}`);
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+      if (red === undefined || green === undefined || blue === undefined || alpha === undefined)
+        throw new Error(`Could not resolve rendered color: ${color}`);
+      return { red: red / 255, green: green / 255, blue: blue / 255, alpha: alpha / 255 };
+    };
+    const composite = (foreground: Color, background: Color): Color => ({
+      red: foreground.red * foreground.alpha + background.red * (1 - foreground.alpha),
+      green: foreground.green * foreground.alpha + background.green * (1 - foreground.alpha),
+      blue: foreground.blue * foreground.alpha + background.blue * (1 - foreground.alpha),
+      alpha: 1,
+    });
+    const ancestors: Element[] = [];
+    for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement)
+      ancestors.unshift(ancestor);
+    let background: Color = { red: 1, green: 1, blue: 1, alpha: 1 };
+    for (const ancestor of ancestors)
+      background = composite(resolveColor(getComputedStyle(ancestor).backgroundColor), background);
+    const linearize = (channel: number) =>
+      channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    const luminance = (color: Color) =>
+      linearize(color.red) * 0.2126 +
+      linearize(color.green) * 0.7152 +
+      linearize(color.blue) * 0.0722;
+    const foreground = luminance(
+      composite(resolveColor(getComputedStyle(element).color), background),
+    );
+    const backdrop = luminance(background);
+    return (Math.max(foreground, backdrop) + 0.05) / (Math.min(foreground, backdrop) + 0.05);
+  });
+}
+
 test('new user creates a project, customizes its theme, and gets the installation snippet', async ({
   page,
 }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
+  await page.evaluate(() => {
+    const fixture = document.createElement('div');
+    fixture.id = 'contrast-composition';
+    fixture.style.cssText = 'position:fixed;left:0;top:0;background:#000;pointer-events:none';
+    fixture.innerHTML =
+      '<div style="background:rgba(255,255,255,0.5)"><div style="background:transparent"><span data-contrast="alpha" style="background:color-mix(in srgb, #000 50%, transparent);color:rgba(255,255,255,0.5)">Alpha composition</span></div></div><div style="background:color-mix(in srgb, #2870ff 30%, transparent)"><span data-contrast="tint" style="background:transparent;color:#2870ff">Cobalt tint</span></div>';
+    document.body.append(fixture);
+  });
+  // Known layered colors catch omitted ancestor backgrounds and foreground alpha.
+  expect(await textContrast(page.locator('[data-contrast="alpha"]'))).toBeCloseTo(3.95, 1);
+  const tintedContrast = await textContrast(page.locator('[data-contrast="tint"]'));
+  expect(tintedContrast).toBeCloseTo(3.61, 1);
+  expect(tintedContrast).toBeLessThan(4.5);
+  await page.locator('#contrast-composition').evaluate((fixture) => {
+    fixture.remove();
+  });
+  const email = page.getByLabel('Email address');
+  const enteredEmail = 'Alex.iPhone.Japan@example.invalid';
+  await email.fill(enteredEmail);
+  await expect.poll(() => textContrast(email)).toBeGreaterThanOrEqual(4.5);
+  await expect(email).toHaveValue(enteredEmail);
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toHaveCSS(
+    'background-color',
+    'rgb(40, 112, 255)',
+  );
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toHaveCSS(
+    'color',
+    'rgb(0, 0, 0)',
+  );
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'light');
+  await expect.poll(() => textContrast(email)).toBeGreaterThanOrEqual(4.5);
+  await expect(email).toHaveValue(enteredEmail);
+  expect(
+    await page.evaluate(async () => (await document.fonts.load('12px "Geist Mono"')).length),
+  ).toBeGreaterThan(0);
   await page.getByRole('button', { name: 'Create an account' }).click();
-  await page.getByLabel('Your name').fill('Alex Morgan');
+  await page.getByLabel('Name').fill('Alex Morgan');
   await page.getByLabel('Email address').fill(`${randomUUID()}@example.invalid`);
   await page.getByLabel('Password', { exact: true }).fill(randomUUID());
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
   await page.getByRole('button', { name: 'Account security', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Your account security' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Account security' })).toBeVisible();
   await expect(page.getByText('No connected tools or websites.')).toBeVisible();
   await page.getByRole('button', { name: 'Feedback', exact: true }).click();
   await page.getByRole('button', { name: 'Create your first project' }).click();
   await page.getByLabel('Project name').fill('Forma website');
   await page.getByRole('button', { name: 'Create project', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Make room for feedback.' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
   await expect(page.getByText(/data-project="prj_/)).toBeVisible();
+  const origins = page.getByLabel('Website origins');
+  const enteredOrigins = 'http://localhost:44321\nhttps://iPhone.Japan.example';
+  await origins.fill(enteredOrigins);
+  const projectChoice = page.getByRole('combobox', { name: 'Project', exact: true });
+  const selectedProject = projectChoice.locator('[data-slot="select-value"]');
+  const colorSchemes: ('light' | 'dark')[] = ['light', 'dark'];
+  for (const colorScheme of colorSchemes) {
+    await page.emulateMedia({ colorScheme });
+    await expect(page.locator('html')).toHaveAttribute('data-mode', colorScheme);
+    await expect.poll(() => textContrast(origins)).toBeGreaterThanOrEqual(4.5);
+    await expect(origins).toHaveValue(enteredOrigins);
+    await expect(selectedProject).toHaveText('Forma website');
+    await expect.poll(() => textContrast(selectedProject)).toBeGreaterThanOrEqual(4.5);
+    await projectChoice.hover();
+    await expect.poll(() => textContrast(selectedProject)).toBeGreaterThanOrEqual(4.5);
+    await projectChoice.click();
+    const option = page.getByRole('option', { name: 'Forma website', exact: true });
+    await expect(option).toBeVisible();
+    await expect.poll(() => textContrast(option)).toBeGreaterThanOrEqual(4.5);
+    await option.hover();
+    await expect.poll(() => textContrast(option)).toBeGreaterThanOrEqual(4.5);
+    await page.keyboard.press('Escape');
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  const darkTab = page.getByRole('tab', { name: 'dark', exact: true });
+  const lightTab = page.getByRole('tab', { name: 'light', exact: true });
+  const systemTab = page.getByRole('tab', { name: 'system', exact: true });
+  await darkTab.click();
+  await expect(darkTab).toHaveAttribute('aria-selected', 'true');
+  await expect(lightTab).toHaveAttribute('aria-selected', 'false');
+  for (const tab of [darkTab, lightTab, systemTab])
+    await expect.poll(() => textContrast(tab)).toBeGreaterThanOrEqual(4.5);
+  await expect(page.getByRole('button', { name: 'Send to agent', exact: true })).toHaveCSS(
+    'background-color',
+    'rgb(40, 112, 255)',
+  );
+  await expect(page.getByRole('button', { name: 'Send to agent', exact: true })).toHaveCSS(
+    'color',
+    'rgb(0, 0, 0)',
+  );
+  const primary = page.getByRole('button', { name: 'Send to agent', exact: true });
+  const outline = page.getByRole('button', { name: '👍 2', exact: true });
+  const secondary = page.locator('[data-slot="avatar-fallback"]').last();
+  const previewMessage = page.getByText('Could we give this button a little more space?', {
+    exact: true,
+  });
+  for (const control of [primary, outline, secondary])
+    await expect.poll(() => textContrast(control)).toBeGreaterThanOrEqual(4.5);
+  await expect.poll(() => textContrast(previewMessage)).toBeGreaterThanOrEqual(4.5);
+  await primary.hover();
+  await expect.poll(() => textContrast(primary)).toBeGreaterThanOrEqual(4.5);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
+  for (const tab of [darkTab, lightTab, systemTab])
+    await expect.poll(() => textContrast(tab)).toBeGreaterThanOrEqual(4.5);
+  await lightTab.click();
+  await expect(lightTab).toHaveAttribute('aria-selected', 'true');
+  await expect(darkTab).toHaveAttribute('aria-selected', 'false');
+  for (const tab of [darkTab, lightTab, systemTab])
+    await expect.poll(() => textContrast(tab)).toBeGreaterThanOrEqual(4.5);
+  await expect(primary.locator('xpath=ancestor::*[@data-slot="card"][1]')).toHaveCSS(
+    'background-color',
+    'rgb(255, 255, 255)',
+  );
+  await expect.poll(() => textContrast(previewMessage)).toBeGreaterThanOrEqual(4.5);
+  await expect.poll(() => textContrast(secondary)).toBeGreaterThanOrEqual(4.5);
   await page.getByRole('tab', { name: 'dark', exact: true }).click();
+  await page.emulateMedia({ colorScheme: 'light' });
   await page.getByRole('button', { name: 'Use #72865d', exact: true }).click();
   await page.getByRole('button', { name: 'Save appearance', exact: true }).click();
   await expect(page.getByText('All changes saved')).toBeVisible();
@@ -34,7 +188,7 @@ test('new user creates a project, customizes its theme, and gets the installatio
   if (!project) throw new Error('Project missing.');
   const createdThread = await page.request.post(`/api/projects/${project.id}/threads`, {
     data: {
-      body: 'Change the button',
+      body: 'Preserve iPhone and Japan URL casing',
       context: {
         url: 'http://localhost:44321/',
         viewport: { width: 1280, height: 800 },
@@ -53,13 +207,27 @@ test('new user creates a project, customizes its theme, and gets the installatio
   const thread = z.object({ thread: threadSchema }).parse(await createdThread.json()).thread;
   await page.request.post(`/api/threads/${thread.id}/messages`, { data: { body: 'Use magenta' } });
   await page.getByRole('button', { name: 'Feedback', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Search feedback' }).fill('magenta');
-  await expect(page.getByText('Change the button', { exact: true })).toBeVisible();
-  await page.getByText('Change the button', { exact: true }).click();
+  const search = page.getByRole('textbox', { name: 'Search feedback' });
+  await search.fill('magenta');
+  await expect.poll(() => textContrast(search)).toBeGreaterThanOrEqual(4.5);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
+  await expect.poll(() => textContrast(search)).toBeGreaterThanOrEqual(4.5);
+  await expect(search).toHaveValue('magenta');
+  await expect(
+    page.getByText('Preserve iPhone and Japan URL casing', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('Preserve iPhone and Japan URL casing', { exact: true })).toHaveCSS(
+    'text-transform',
+    'none',
+  );
+  await page.getByText('Preserve iPhone and Japan URL casing', { exact: true }).click();
   await expect(page.getByText('Use magenta', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('textbox', { name: 'Search feedback' }).fill('absent-term');
-  await expect(page.getByText('Change the button', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Preserve iPhone and Japan URL casing', { exact: true })).toHaveCount(
+    0,
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
@@ -101,7 +269,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
   await expect(frame.locator('html')).toHaveCSS('--primary', '#788468');
-  await expect(frame.locator('html')).toHaveCSS('--radius', '3px');
+  await expect(frame.locator('html')).toHaveCSS('--radius', '0px');
   const popupPromise = page.waitForEvent('popup');
   await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
   const popup = await popupPromise;
@@ -134,7 +302,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await page.locator('[data-feedback-id=hero-button]').click();
   await frame
     .getByLabel('What would you like to change?')
-    .fill('Please increase the spacing around this button.');
+    .fill('Please increase the spacing around this iPhone button.');
   const postedPromise = page.waitForResponse(
     (response) => response.url().includes('/threads') && response.request().method() === 'POST',
     { timeout: 5000 },
@@ -142,12 +310,22 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await frame.getByRole('button', { name: 'Post feedback' }).click();
   const posted = await postedPromise;
   expect(posted.status()).toBe(201);
-  await expect(frame.getByText('Please increase the spacing around this button.')).toBeVisible();
+  await expect(
+    frame.getByText('Please increase the spacing around this iPhone button.'),
+  ).toBeVisible();
+  await expect(frame.getByText('Please increase the spacing around this iPhone button.')).toHaveCSS(
+    'text-transform',
+    'none',
+  );
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await expect(frame.getByText('Please increase the spacing around this iPhone button.')).toHaveCSS(
+    'text-transform',
+    'none',
+  );
+  await frame.getByText('Please increase the spacing around this iPhone button.').click();
   await frame.getByRole('button', { name: 'React with 👍' }).click();
   await frame.getByRole('button', { name: 'Send to agent' }).click();
-  await expect(
-    frame.getByText('Waiting for your local connector. Your request is saved.'),
-  ).toBeVisible();
+  await expect(frame.getByText('Queued. Waiting for the agent.')).toBeVisible();
   const data = z
     .object({ threads: z.array(threadSchema) })
     .parse(await (await page.request.get(`/api/projects/${project.id}/threads`)).json());
@@ -242,7 +420,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   }, project.id);
   await expect(frame.locator('html')).toHaveCSS('--primary', '#4065ab');
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
-  await expect(frame.locator('html')).toHaveCSS('--radius', '3px');
+  await expect(frame.locator('html')).toHaveCSS('--radius', '0px');
   expect(errors).toEqual([]);
 });
 

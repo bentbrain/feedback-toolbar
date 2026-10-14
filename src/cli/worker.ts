@@ -8,6 +8,7 @@ import { publicJobSchema, threadSchema } from '../shared/models.js';
 import { client } from './client.js';
 import { runnerPolicy } from './runner-policy.js';
 import { resolveRunnerRuntime } from './runner-runtime.js';
+import { superviseRunner } from './runner-process.js';
 
 const claimSchema = z.object({
   job: publicJobSchema.extend({ snapshot: threadSchema }).nullable(),
@@ -54,12 +55,22 @@ export async function runWorker(options: {
     );
   }
   await lock.writeFile(`${process.pid}\n`);
-  const state = { stopped: false, connectionLost: false };
+  const state = { stopped: false, connectionLost: false, terminationFailed: false };
+  const stopped = () => state.stopped;
   const interrupted = () => state.stopped || state.connectionLost;
-  let child: ReturnType<typeof spawn> | null = null;
+  let child: ReturnType<typeof superviseRunner> | null = null;
+  const terminate = (runner: ReturnType<typeof superviseRunner>) => {
+    const result = runner.terminate();
+    void result.catch((error: unknown) => {
+      state.terminationFailed = true;
+      state.stopped = true;
+      console.error(error instanceof Error ? error.message : 'Runner termination failed.');
+    });
+    return result;
+  };
   const stop = () => {
     state.stopped = true;
-    child?.kill('SIGTERM');
+    if (child) void terminate(child);
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
@@ -74,6 +85,7 @@ export async function runWorker(options: {
           body: {},
         }),
       );
+      if (stopped()) break;
       if (claim.job && claim.lease) {
         const job = claim.job;
         const lease = claim.lease;
@@ -100,26 +112,33 @@ export async function runWorker(options: {
           method: 'POST',
           body: { lease, runId },
         });
+        if (stopped()) break;
         const log = await open(logFile, 'wx', 0o600);
+        if (stopped()) {
+          await log.close();
+          break;
+        }
         const running = spawn(
           runtime.executable,
           ['exec', ...permissions.args, '--json', '--output-last-message', resultFile, '-'],
           {
             cwd: connection.workspace,
             env: permissions.environment,
+            detached: true,
             stdio: ['pipe', log.fd, 'inherit'],
           },
         );
+        const supervised = superviseRunner(running);
+        child = supervised;
         const input = running.stdin;
         if (!input) {
-          running.kill('SIGTERM');
+          await terminate(supervised);
           throw new Error('Runner input is unavailable.');
         }
         input.end(policy + '\nFeedback task follows as JSON:\n' + JSON.stringify(job.snapshot));
         input.on('error', () => {
-          running.kill('SIGTERM');
+          void terminate(supervised);
         });
-        child = running;
         let heartbeatBusy = false;
         state.connectionLost = false;
         const timer = setInterval(() => {
@@ -130,23 +149,20 @@ export async function runWorker(options: {
             .catch((error: unknown) => {
               state.connectionLost = true;
               console.error(error instanceof Error ? error.message : 'Lost work authorization.');
-              running.kill('SIGTERM');
+              void terminate(supervised);
             })
             .finally(() => {
               heartbeatBusy = false;
             });
         }, 30_000);
         const timeout = setTimeout(() => {
-          if (child === running) running.kill('SIGTERM');
+          if (child === supervised) void terminate(supervised);
         }, 30 * 60_000);
         timeout.unref();
         let status = 'failed';
         let body = '';
         try {
-          const exit = await new Promise<number | null>((resolve, reject) => {
-            running.once('error', reject);
-            running.once('exit', resolve);
-          });
+          const exit = await supervised.exited;
           status = exit === 0 ? 'review' : 'failed';
           try {
             body = await readFile(resultFile, 'utf8');
@@ -158,6 +174,7 @@ export async function runWorker(options: {
         } finally {
           clearInterval(timer);
           clearTimeout(timeout);
+          await terminate(supervised);
           child = null;
           await log.close();
         }
@@ -194,9 +211,17 @@ export async function runWorker(options: {
       if (!options.once && !state.stopped) await delay(options.interval);
     } while (!options.once && !state.stopped);
   } finally {
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
-    await lock.close();
+    try {
+      if (child) await terminate(child);
+    } finally {
+      await lock.close();
+      process.off('SIGINT', stop);
+      process.off('SIGTERM', stop);
+    }
+    if (state.terminationFailed)
+      throw new Error(
+        'Worker stopped without confirming runner termination. Its lock is retained.',
+      );
     const { unlink } = await import('node:fs/promises');
     await unlink(lockPath);
   }

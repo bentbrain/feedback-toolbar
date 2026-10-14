@@ -422,18 +422,16 @@ export function Conversation({
                   <Bot className="size-3" /> Send to agent
                 </Button>
               ) : null}
-              {!compact ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  disabled={busy}
-                  onClick={() => void work(onResolve)}
-                >
-                  <Check className="size-3" />
-                  {thread.status === 'open' ? 'Resolve' : 'Reopen'}
-                </Button>
-              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={busy}
+                onClick={() => void work(onResolve)}
+              >
+                <Check className="size-3" />
+                {thread.status === 'open' ? 'Resolve' : 'Reopen'}
+              </Button>
               {role === 'owner' && onCancel && job && ['queued', 'running'].includes(job.status) ? (
                 <Button
                   type="button"

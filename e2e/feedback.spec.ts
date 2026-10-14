@@ -221,6 +221,83 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   expect(errors).toEqual([]);
 });
 
+test('embedded toolbar reconciles older pages and retains an active resolved conversation', async ({
+  page,
+}) => {
+  expect(
+    (
+      await page.request.post('/api/auth/sign-up/email', {
+        data: {
+          name: 'Embedded pagination reviewer',
+          email: `${randomUUID()}@example.invalid`,
+          password: randomUUID(),
+        },
+      })
+    ).status(),
+  ).toBe(200);
+  const project = z.object({ project: projectSchema }).parse(
+    await (
+      await page.request.post('/api/projects', {
+        data: { name: 'Embedded cached pages', origins: ['http://localhost:44321'] },
+      })
+    ).json(),
+  ).project;
+  const context = {
+    url: 'http://localhost:44321/',
+    viewport: { width: 1280, height: 800 },
+    deployment: null,
+    anchor: {
+      selector: 'button',
+      feedbackId: null,
+      tag: 'button',
+      text: 'Button',
+      label: '',
+      rect: { x: 0, y: 0, width: 100, height: 30 },
+    },
+  };
+  const ids: string[] = [];
+  for (let index = 0; index < 53; index++) {
+    const response = await page.request.post(`/api/projects/${project.id}/threads`, {
+      data: { context, body: `Embedded older feedback ${index}` },
+    });
+    expect(response.status()).toBe(201);
+    ids.push(z.object({ thread: threadSchema }).parse(await response.json()).thread.id);
+  }
+  await page.goto(`http://localhost:44321/?project=${project.id}`);
+  await expect
+    .poll(() => page.frames().some((frame) => frame.url().includes('/toolbar?')))
+    .toBe(true);
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar frame missing.');
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  const popupPromise = page.waitForEvent('popup');
+  await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
+  const popup = await popupPromise;
+  await popup.waitForURL(/\/auth\?user_code=/);
+  await popup.getByRole('button', { name: 'Approve connection' }).click();
+  await expect(popup.getByText('Connection approved.')).toBeVisible();
+  await popup.close();
+  await expect(frame.getByRole('button', { name: 'Load earlier feedback' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(frame.getByText('Embedded older feedback 0', { exact: true })).toHaveCount(0);
+  await frame.getByRole('button', { name: 'Load earlier feedback' }).click();
+  await expect(frame.getByText('Embedded older feedback 0', { exact: true })).toBeVisible();
+  const oldest = ids[0];
+  if (!oldest) throw new Error('Oldest thread missing.');
+  await page.request.patch(`/api/threads/${oldest}`, { data: { status: 'resolved' } });
+  await expect(frame.getByText('Embedded older feedback 0', { exact: true })).toHaveCount(0, {
+    timeout: 10_000,
+  });
+  await expect(frame.getByText('Embedded older feedback 1', { exact: true })).toBeVisible();
+  await frame.getByText('Embedded older feedback 1', { exact: true }).click();
+  await frame.getByRole('button', { name: 'Resolve', exact: true }).click();
+  await expect(frame.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible();
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await expect(frame.getByText('Embedded older feedback 1', { exact: true })).toHaveCount(0);
+  await expect(frame.getByText('Embedded older feedback 2', { exact: true })).toBeVisible();
+});
+
 test('filtered dashboard reconciles resolved cached rows while preserving loaded earlier conversations', async ({
   page,
 }) => {

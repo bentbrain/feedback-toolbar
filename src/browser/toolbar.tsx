@@ -48,6 +48,11 @@ function Toolbar() {
   const [screen, setScreen] = useState<'list' | 'selecting' | 'compose' | 'thread'>('list');
   const [context, setContext] = useState<z.infer<typeof contextSchema> | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
+  const cachedThreads = useRef<Thread[]>([]);
+  useEffect(() => {
+    cachedThreads.current = threads;
+  }, [threads]);
+  const [activeDetail, setActiveDetail] = useState<Thread | null>(null);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
   const loadedPages = useRef(false);
   const [jobs, setJobs] = useState<Work[]>([]);
@@ -65,7 +70,8 @@ function Toolbar() {
     expires: number;
   } | null>(null);
   const version = useRef(0);
-  const active = threads.find((thread) => thread.id === activeId);
+  const active =
+    activeDetail?.id === activeId ? activeDetail : threads.find((thread) => thread.id === activeId);
   const resolvedTheme = useMemo(
     () => themeSchema.parse({ ...theme, ...overrides }),
     [theme, overrides],
@@ -85,8 +91,9 @@ function Toolbar() {
   const refresh = useCallback(async () => {
     if (!auth) return;
     const current = ++version.current;
+    const query = new URLSearchParams({ status: 'open', ...(page ? { url: page } : {}) });
     const [list, projects, currentThread] = await Promise.all([
-      api(`/api/projects/${projectId}/threads${page ? `?url=${encodeURIComponent(page)}` : ''}`),
+      api(`/api/projects/${projectId}/threads?${query.toString()}`),
       api('/api/projects'),
       activeId ? api(`/api/threads/${activeId}`) : Promise.resolve(null),
     ]);
@@ -102,16 +109,32 @@ function Toolbar() {
       ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
       : null;
     if (latest) {
-      data.threads = [
-        latest.thread,
-        ...data.threads.filter((thread) => thread.id !== latest.thread.id),
-      ];
+      setActiveDetail(latest.thread);
+      data.threads = data.threads.map((thread) =>
+        thread.id === latest.thread.id ? latest.thread : thread,
+      );
       data.jobs = [...data.jobs.filter((job) => job.threadId !== latest.thread.id), ...latest.jobs];
     }
-    setThreads((previous) => [
-      ...data.threads,
-      ...previous.filter((thread) => !data.threads.some((current) => current.id === thread.id)),
-    ]);
+    const ids = cachedThreads.current
+      .filter(
+        (thread) =>
+          thread.context.url === page && !data.threads.some((fresh) => fresh.id === thread.id),
+      )
+      .map((thread) => thread.id);
+    const batches = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) =>
+      ids.slice(index * 50, index * 50 + 50),
+    );
+    const retained = await Promise.all(
+      batches.map(async (batch) => {
+        const criteria = new URLSearchParams(query);
+        criteria.set('ids', batch.join(','));
+        return z
+          .object({ threads: z.array(threadSchema) })
+          .parse(await api(`/api/projects/${projectId}/threads?${criteria.toString()}`)).threads;
+      }),
+    );
+    if (current !== version.current) return;
+    setThreads([...data.threads, ...retained.flat()]);
     if (!loadedPages.current) setNextBefore(data.nextBefore);
     setJobs(data.jobs);
     const own = z
@@ -194,6 +217,9 @@ function Toolbar() {
     if (!result.success) return;
     const data = result.data;
     if (data.type === 'feedback:configure') {
+      version.current++;
+      cachedThreads.current = [];
+      setActiveDetail(null);
       setOverrides(data.theme ?? {});
       setPage(data.url ?? '');
       loadedPages.current = false;
@@ -201,6 +227,9 @@ function Toolbar() {
       setThreads([]);
     }
     if (data.type === 'feedback:navigation') {
+      version.current++;
+      cachedThreads.current = [];
+      setActiveDetail(null);
       setPage(data.url ?? '');
       loadedPages.current = false;
       setNextBefore(null);
@@ -321,6 +350,7 @@ function Toolbar() {
   const back = () => {
     setScreen('list');
     setActiveId(null);
+    setActiveDetail(null);
     setDraft('');
     setError('');
     send({ type: 'feedback:clear' });
@@ -330,6 +360,8 @@ function Toolbar() {
     back();
   };
   const signOut = async () => {
+    version.current++;
+    cachedThreads.current = [];
     try {
       await connectionStore.signOut();
     } finally {
@@ -620,10 +652,12 @@ function Toolbar() {
                     className="m-4"
                     size="sm"
                     onClick={() => {
+                      const current = ++version.current;
                       void api(
-                        `/api/projects/${projectId}/threads?before=${nextBefore}${page ? `&url=${encodeURIComponent(page)}` : ''}`,
+                        `/api/projects/${projectId}/threads?status=open&before=${nextBefore}${page ? `&url=${encodeURIComponent(page)}` : ''}`,
                       )
                         .then((result) => {
+                          if (current !== version.current) return;
                           const page = z
                             .object({
                               threads: z.array(threadSchema),

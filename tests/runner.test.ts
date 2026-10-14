@@ -5,8 +5,11 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
+import { stat } from 'node:fs/promises';
 import { resolveRunnerRuntime } from '../src/cli/runner-runtime.js';
 import { runnerPolicy } from '../src/cli/runner-policy.js';
+import { superviseRunner } from '../src/cli/runner-process.js';
 
 void test('runner resolves symlinked installations and grants only executable runtime files', async (t) => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'feedback-runner-path-')));
@@ -149,5 +152,121 @@ void test(
     }
     assert.ok(requests > 0, `Runner failed before reaching the disposable provider: ${diagnostic}`);
     assert.ok(!diagnostic.includes('sandbox helper failed'), diagnostic);
+  },
+);
+
+void test(
+  'installed runner cancellation stops a sandboxed tool before its delayed write',
+  { timeout: 25_000 },
+  async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('POSIX runner only.');
+      return;
+    }
+    let runtime;
+    try {
+      runtime = await resolveRunnerRuntime();
+    } catch (error) {
+      if (process.env.CI) throw error;
+      t.skip('Install the supported runner.');
+      return;
+    }
+    await mkdir('.data', { recursive: true, mode: 0o700 });
+    const directory = await realpath(await mkdtemp('.data/runner-cancel-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const workspace = join(directory, 'workspace');
+    const auth = join(directory, 'auth');
+    await mkdir(join(workspace, '.feedback-tmp'), { recursive: true });
+    await mkdir(auth, { mode: 0o700 });
+    const server = createServer((request, response) => {
+      request.resume();
+      const item = {
+        type: 'function_call',
+        name: 'exec_command',
+        call_id: 'disposable-call',
+        arguments: JSON.stringify({
+          cmd: 'printf ready > command-started; sleep 4; printf cancelled-write > late-result.txt',
+          yield_time_ms: 1000,
+          max_output_tokens: 100,
+        }),
+      };
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const emit = (type: string, value: object) => {
+        response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`);
+      };
+      emit('response.created', {
+        response: { id: 'disposable-response', status: 'in_progress', output: [] },
+      });
+      emit('response.output_item.added', { output_index: 0, item: { ...item, arguments: '' } });
+      emit('response.function_call_arguments.delta', { output_index: 0, delta: item.arguments });
+      emit('response.output_item.done', { output_index: 0, item });
+      emit('response.completed', {
+        response: { id: 'disposable-response', status: 'completed', output: [item] },
+      });
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(
+      () =>
+        new Promise<void>((resolve) =>
+          server.close(() => {
+            resolve();
+          }),
+        ),
+    );
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const permissions = runnerPolicy(workspace, runtime);
+    const child = spawn(
+      runtime.executable,
+      [
+        'exec',
+        ...permissions.args,
+        '--skip-git-repo-check',
+        '--json',
+        '-c',
+        'features.code_mode=false',
+        '-c',
+        'model="feedback-cancellation-probe"',
+        '-c',
+        'model_provider="feedback_probe"',
+        '-c',
+        `model_providers.feedback_probe={name="Disposable",base_url="http://127.0.0.1:${address.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}`,
+        'Run a disposable cancellation probe.',
+      ],
+      {
+        cwd: workspace,
+        env: { ...permissions.environment, HOME: directory, CODEX_HOME: auth },
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const supervised = superviseRunner(child);
+    t.after(() => supervised.terminate());
+    let diagnostic = '';
+    child.stdout.on('data', (data: Buffer) => {
+      diagnostic = (diagnostic + data.toString()).slice(-2000);
+    });
+    child.stderr.on('data', (data: Buffer) => {
+      diagnostic = (diagnostic + data.toString()).slice(-2000);
+    });
+    let started = false;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      try {
+        await stat(join(workspace, 'command-started'));
+        started = true;
+        break;
+      } catch {
+        /* Tool startup. */
+      }
+      if (child.exitCode !== null) break;
+      await delay(25);
+    }
+    await supervised.terminate();
+    await supervised.exited;
+    assert.ok(started, `The disposable tool did not start: ${diagnostic}`);
+    await delay(4300);
+    await assert.rejects(stat(join(workspace, 'late-result.txt')), { code: 'ENOENT' });
   },
 );

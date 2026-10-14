@@ -370,6 +370,59 @@ test('selection keeps an Astro table header cell granular through hover and comp
     .toBe('none');
 });
 
+for (const target of ['#editor-title', '#editor-paragraph']) {
+  test(`redacted editor target ${target} remains granular and resolves its feedback pin`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate(() => {
+      const main = document.querySelector('main');
+      if (!main) throw new Error('Main missing');
+      main.setAttribute('data-feedback-private', '');
+      main.setAttribute('data-feedback-redact', '');
+      main.innerHTML =
+        '<label for="editor-title">Title</label><input id="editor-title" value="Unpublished title" aria-label="Unpublished title metadata"><div contenteditable="true"><p id="editor-paragraph" aria-label="Unpublished paragraph metadata">Unpublished paragraph</p></div>';
+    });
+    const element = page.locator(target);
+    await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+    await element.click();
+    await expect(frame.getByText(target, { exact: true })).toBeVisible();
+    await expect(frame.getByText('[Private element]', { exact: true })).toBeVisible();
+    await frame.getByLabel('What would you like to change?').fill('Adjust this editor element');
+    const posted = page.waitForResponse(
+      (response) => response.url().endsWith('/threads') && response.request().method() === 'POST',
+    );
+    await frame.getByRole('button', { name: 'Post feedback', exact: true }).click();
+    const result = z.object({ thread: threadSchema }).parse(await (await posted).json());
+    expect(result.thread.context.anchor).toMatchObject({
+      selector: target,
+      text: '[Private element]',
+      label: '',
+    });
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+    if (target === '#editor-paragraph')
+      await page.screenshot({ path: '.data/review/editor-anchor-after.png' });
+    await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+    await clickPin(page, 1);
+    await expect(frame.getByText('Adjust this editor element', { exact: true })).toBeVisible();
+    await page.locator('main').evaluate((node) => {
+      node.removeAttribute('data-feedback-redact');
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+    await page.locator('main').evaluate((node) => {
+      node.setAttribute('data-feedback-redact', '');
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+    await element.evaluate((node) => {
+      node.setAttribute('data-feedback-private', '');
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+  });
+}
+
 test('toggle renders isolated accessible pins and click or keyboard opens the matching thread in place', async ({
   page,
 }) => {

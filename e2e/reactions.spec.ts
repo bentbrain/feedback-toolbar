@@ -384,16 +384,45 @@ test.describe('touch emoji grid', () => {
     page,
     baseURL,
   }) => {
-    await fixture(page, baseURL);
+    const f = await fixture(page, baseURL);
+    const actorId = f.thread.messages[0]?.actorId;
+    if (!actorId) throw new Error('Missing fixture actor');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
+    await page.evaluate((actorId) => {
+      localStorage.setItem(
+        `feedback-emoji-favourites-v1:${actorId}`,
+        JSON.stringify(
+          ['😀', '😁', '😂', '😃', '😄', '😅', '😆', '😉'].map((emoji) => ({ emoji, count: 1 })),
+        ),
+      );
+    }, actorId);
     await page.getByText('Searchable emoji feedback', { exact: true }).click();
     await page.getByRole('button', { name: 'Add reaction', exact: true }).click();
     const popup = page.locator('[data-slot="popover-content"]');
     const cells = popup.getByRole('gridcell');
+    const favouriteButtons = popup
+      .getByRole('group', { name: 'Favourite emojis' })
+      .getByRole('button');
+    await expect(favouriteButtons).toHaveCount(8);
     await expect(cells.first()).toBeVisible();
     for (const width of [390, 320, 260]) {
       await page.setViewportSize({ width, height: 844 });
+      await expect
+        .poll(() =>
+          favouriteButtons.evaluateAll((elements) =>
+            elements.flatMap((element) => {
+              const bounds = element.getBoundingClientRect();
+              const popup = element.closest('[data-slot="popover-content"]');
+              if (!popup) throw new Error('Reaction popup missing');
+              const clip = popup.getBoundingClientRect();
+              return bounds.left < clip.left - 1 || bounds.right > clip.right + 1
+                ? [element.textContent]
+                : [];
+            }),
+          ),
+        )
+        .toEqual([]);
       await expect
         .poll(() =>
           cells.evaluateAll((elements) =>

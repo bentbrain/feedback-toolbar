@@ -105,7 +105,7 @@ function ReactionPicker({
       {favourites.length > 0 ? (
         <div className="shrink-0 border-b p-2">
           <p className="mb-1 px-1 text-xs text-muted-foreground">Favourites</p>
-          <div role="group" aria-label="Favourite emojis" className="flex">
+          <div role="group" aria-label="Favourite emojis" className="flex flex-wrap">
             {favourites.map((emoji) => (
               <Button
                 key={emoji}

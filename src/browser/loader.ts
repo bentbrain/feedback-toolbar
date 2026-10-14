@@ -39,6 +39,15 @@ function selectorFor(element: Element): string {
   let current: Element | null = element;
   while (current && parts.length < 6 && current !== document.documentElement) {
     const tag = current.tagName.toLowerCase();
+    const stableAncestor = current.getAttribute('data-feedback-id');
+    if (stableAncestor || current.id) {
+      parts.unshift(
+        stableAncestor
+          ? `[data-feedback-id="${CSS.escape(stableAncestor)}"]`
+          : `#${CSS.escape(current.id)}`,
+      );
+      break;
+    }
     const parent: Element | null = current.parentElement;
     const siblings = parent
       ? Array.from(parent.children).filter((child) => child.tagName === current?.tagName)

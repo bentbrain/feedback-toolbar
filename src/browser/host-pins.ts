@@ -48,6 +48,43 @@ interface PinBounds {
   clipped: boolean;
 }
 
+interface PinPosition {
+  x: number;
+  y: number;
+}
+
+function pinPosition(
+  preferred: PinPosition,
+  bounds: PinBounds,
+  occupied: PinPosition[],
+): PinPosition | null {
+  const fits = (x: number, y: number) =>
+    x >= bounds.left &&
+    y >= bounds.top &&
+    x + 32 <= bounds.right &&
+    y + 32 <= bounds.bottom &&
+    occupied.every((pin) => Math.abs(pin.x - x) >= 36 || Math.abs(pin.y - y) >= 36);
+  if (fits(preferred.x, preferred.y)) return preferred;
+  // Search nearby viewport positions across all anchors, retaining every control
+  // that fits. Clipped anchors stay within their visible clipping rectangle.
+  const limit = Math.ceil(Math.max(bounds.right - bounds.left, bounds.bottom - bounds.top) / 36);
+  for (let radius = 1; radius <= limit; radius++) {
+    const right = preferred.x + radius * 36;
+    if (fits(right, preferred.y)) return { x: right, y: preferred.y };
+    for (let offset = -radius; offset <= radius; offset++) {
+      for (const side of [-radius, radius]) {
+        const x = preferred.x + side * 36;
+        const y = preferred.y + offset * 36;
+        if (fits(x, y)) return { x, y };
+        const rowX = preferred.x + offset * 36;
+        const rowY = preferred.y + side * 36;
+        if (fits(rowX, rowY)) return { x: rowX, y: rowY };
+      }
+    }
+  }
+  return null;
+}
+
 function resolveAnchor(selector: string): Element | null {
   const matches = document.querySelectorAll(selector);
   const element = matches.length === 1 ? matches.item(0) : null;
@@ -142,10 +179,11 @@ function visibleBounds(
       style = getComputedStyle(ancestor);
       styles.set(ancestor, style);
     }
+    // aria-hidden affects assistive technology, not rendered visibility. A
+    // decorative SVG can still be the exact element selected for feedback.
     if (
       ancestor.hasAttribute('hidden') ||
       ancestor.hasAttribute('inert') ||
-      ancestor.getAttribute('aria-hidden') === 'true' ||
       style.display === 'none' ||
       style.visibility !== 'visible' ||
       style.getPropertyValue('content-visibility') === 'hidden' ||
@@ -297,6 +335,7 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
     const styles = new Map<Element, CSSStyleDeclaration>();
     const bounds = new Map<Element, PinBounds | null>();
     const groups = new Map<Element, number[]>();
+    const occupied: PinPosition[] = [];
     anchors.forEach((anchor, index) => {
       if (!anchor) return;
       if (!bounds.has(anchor)) bounds.set(anchor, visibleBounds(anchor, styles));
@@ -320,14 +359,27 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       const right = rect.clipped ? rect.right : innerWidth;
       const bottom = rect.clipped ? rect.bottom : innerHeight;
       const columns = Math.max(1, Math.floor((right - left + 4) / 36));
-      const x = Math.min(innerWidth - 40, left) + (offset % columns) * 36;
-      const y = top + Math.floor(offset / columns) * 36;
-      if (x + 32 > right || y + 32 > bottom) {
+      const position = pinPosition(
+        {
+          x: Math.min(innerWidth - 40, left) + (offset % columns) * 36,
+          y: top + Math.floor(offset / columns) * 36,
+        },
+        {
+          left: rect.clipped ? left : 8,
+          top: rect.clipped ? top : 8,
+          right: rect.clipped ? right : innerWidth - 8,
+          bottom: rect.clipped ? bottom : innerHeight - 8,
+          clipped: rect.clipped,
+        },
+        occupied,
+      );
+      if (!position) {
         button.hidden = true;
         return;
       }
-      button.style.left = `${x}px`;
-      button.style.top = `${y}px`;
+      occupied.push(position);
+      button.style.left = `${position.x}px`;
+      button.style.top = `${position.y}px`;
       button.setAttribute(
         'aria-label',
         `Open feedback ${index + 1}${group.length > 1 ? `, ${offset + 1} of ${group.length} on this element` : ''}`,

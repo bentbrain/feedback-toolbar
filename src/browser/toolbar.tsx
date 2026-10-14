@@ -391,7 +391,7 @@ function Toolbar() {
       body: { revision: thread.revision, idempotencyKey: crypto.randomUUID() },
     });
     await refresh();
-    toast.success('Feedback queued for your local agent.');
+    toast.success('Queued.');
   };
   return (
     <TooltipProvider>
@@ -471,16 +471,10 @@ function Toolbar() {
           ) : null}
           {!auth ? (
             <div className="flex-1 overflow-auto">
-              <Empty
-                title="Your website, in conversation."
-                description="Sign in to leave feedback, discuss changes, and work with your agent."
-              >
+              <Empty title="Sign in">
                 <Button onClick={() => void signIn()} size="sm">
                   Sign in to Feedback <ArrowUpRight />
                 </Button>
-                <p className="mt-1 text-[10px] text-muted-foreground">
-                  Independent of your website account.
-                </p>
                 {pending ? (
                   <p className="text-[10px] text-muted-foreground">
                     Approval code: {pending.code}. Confirm this code in the sign-in window.
@@ -491,7 +485,7 @@ function Toolbar() {
           ) : screen === 'selecting' ? (
             <div className="flex-1">
               <Empty
-                title="What would you like to change?"
+                title="Select an element"
                 description="Click an element on the page. Press Escape to cancel."
                 symbol={<Target className="size-5" />}
               >
@@ -543,7 +537,7 @@ function Toolbar() {
                   onChange={(event) => {
                     setDraft(event.target.value);
                   }}
-                  placeholder="Describe the change. Your agent will see this element and page context."
+                  placeholder="Describe the change…"
                   maxLength={8000}
                   required
                   className="min-h-32 text-xs leading-6"
@@ -640,8 +634,8 @@ function Toolbar() {
                   })
                 ) : (
                   <Empty
-                    title="A little feedback goes a long way."
-                    description="Select an element and start a conversation about what could be better."
+                    title="No feedback"
+                    description="Select an element to leave feedback."
                     symbol={<Target className="size-5" />}
                   >
                     {role !== 'viewer' ? (
@@ -695,7 +689,7 @@ function Toolbar() {
           <footer className="flex shrink-0 items-center justify-between border-t px-5 py-3 text-[10px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="size-1.5 rounded-full bg-primary" />
-              {auth?.user?.name ?? 'Private project feedback'}
+              {auth?.user?.name ?? ''}
             </span>
             {auth ? (
               <Button
@@ -710,9 +704,7 @@ function Toolbar() {
               >
                 Sign out
               </Button>
-            ) : (
-              <span>Powered by Feedback</span>
-            )}
+            ) : null}
           </footer>
         </section>
       )}

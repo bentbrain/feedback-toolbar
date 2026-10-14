@@ -65,14 +65,16 @@ export function PageHeading({
   children,
 }: {
   title: string;
-  description: string;
+  description?: string;
   children?: ReactNode;
 }) {
   return (
     <div className="mb-7 flex flex-wrap items-start justify-between gap-4">
       <div>
         <h1 className="text-[28px] font-medium tracking-[-1px] sm:text-[30px]">{title}</h1>
-        <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{description}</p>
+        {description ? (
+          <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{description}</p>
+        ) : null}
       </div>
       {children}
     </div>
@@ -106,7 +108,7 @@ export function Empty({
   symbol,
 }: {
   title: string;
-  description: string;
+  description?: string;
   children?: ReactNode;
   symbol?: ReactNode;
 }) {
@@ -116,7 +118,9 @@ export function Empty({
         {symbol ?? <MessageCircle className="size-5" />}
       </div>
       <h3 className="text-sm font-medium">{title}</h3>
-      <p className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</p>
+      {description ? (
+        <p className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</p>
+      ) : null}
       {children}
     </div>
   );
@@ -222,37 +226,6 @@ export function JobBadge({ job }: { job: Work }) {
     >
       {job.status === 'review' ? 'Ready for review' : job.status}
     </Badge>
-  );
-}
-export function MiniWebsite() {
-  return (
-    <div aria-hidden="true" className="relative mx-auto w-full max-w-[290px] pb-7">
-      <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-        <div className="mb-5 flex gap-1 border-b pb-2">
-          {[1, 2, 3].map((item) => (
-            <i key={item} className="size-1 rounded-full bg-primary/20" />
-          ))}
-        </div>
-        <div className="mx-2">
-          <div className="mb-2 h-2 w-3/4 rounded bg-primary/20" />
-          <div className="h-2 w-1/2 rounded bg-primary/10" />
-          <div className="mb-2 mt-5 flex gap-2">
-            {[1, 2, 3].map((item) => (
-              <div key={item} className="h-12 flex-1 rounded bg-muted" />
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="absolute -bottom-0 right-0 flex items-center gap-2 rounded-xl border bg-card px-3 py-3 shadow-sm">
-        <div className="grid size-7 place-items-center rounded-full bg-secondary text-secondary-foreground">
-          <MessageCircle className="size-3" />
-        </div>
-        <div className="text-[10px]">
-          <strong className="font-medium text-foreground">element comments</strong>
-          <p className="mt-1 text-[9px] text-muted-foreground">threads and agent replies</p>
-        </div>
-      </div>
-    </div>
   );
 }
 export function Conversation({
@@ -379,11 +352,11 @@ export function Conversation({
             ) : null}
             <p className="text-[11px] leading-5 text-muted-foreground">
               {job.status === 'queued'
-                ? 'Waiting for your local connector. Your request is saved.'
+                ? 'Queued. Waiting for the agent.'
                 : job.status === 'running'
                   ? (job.leaseExpiresAt ?? 0) < Date.now()
                     ? 'The runner lost connection. Check its local run record before cancelling or requesting a retry.'
-                    : 'Your agent is working on this feedback.'
+                    : 'Agent running.'
                   : job.status === 'review'
                     ? 'Review the proposed change before resolving this thread.'
                     : job.status === 'failed' && job.result
@@ -414,7 +387,7 @@ export function Conversation({
             onChange={(event) => {
               setDraft(event.target.value);
             }}
-            placeholder="Reply to the conversation…"
+            placeholder="Reply…"
             className="min-h-16 resize-none text-xs"
             maxLength={8000}
             required

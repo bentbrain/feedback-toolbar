@@ -56,10 +56,18 @@ export function applyTheme(theme: Theme, element: HTMLElement = document.documen
   const accent =
     resolved === 'dark' && theme.accent.toLowerCase() === '#0647ff' ? '#2870ff' : theme.accent;
   element.style.setProperty('--primary', accent);
-  element.style.setProperty(
+  const foreground =
+    theme.accent.toLowerCase() === '#0647ff' ? accent : resolved === 'dark' ? '#f5f5f5' : '#171717';
+  for (const property of [
     '--foreground',
-    theme.accent.toLowerCase() === '#0647ff' ? accent : resolved === 'dark' ? '#f5f5f5' : '#171717',
-  );
+    '--card-foreground',
+    '--popover-foreground',
+    '--secondary-foreground',
+    '--accent-foreground',
+  ])
+    element.style.setProperty(property, foreground);
+  for (const property of ['--border', '--input', '--ring'])
+    element.style.setProperty(property, accent);
   const rgb = accent.match(/[a-fA-F\d]{2}/g)?.map((value) => Number.parseInt(value, 16)) ?? [
     0, 0, 0,
   ];

@@ -1,7 +1,32 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator } from '@playwright/test';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { projectSchema, publicJobSchema, threadSchema } from '../src/shared/models.js';
+
+async function textContrast(element: Locator, backgroundSelector?: string) {
+  return element.evaluate((element, selector) => {
+    const background = selector ? element.closest(selector) : element;
+    if (!background) throw new Error('Contrast background is missing.');
+    const luminance = (color: string) => {
+      const channels = color
+        .match(/[\d.]+/g)
+        ?.slice(0, 3)
+        .map(Number);
+      if (channels?.length !== 3) throw new Error(`Unexpected rendered color: ${color}`);
+      return channels.reduce((sum, channel, index) => {
+        const value = channel / 255;
+        return (
+          sum +
+          (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4) *
+            ([0.2126, 0.7152, 0.0722][index] ?? 0)
+        );
+      }, 0);
+    };
+    const foreground = luminance(getComputedStyle(element).color);
+    const backdrop = luminance(getComputedStyle(background).backgroundColor);
+    return (Math.max(foreground, backdrop) + 0.05) / (Math.min(foreground, backdrop) + 0.05);
+  }, backgroundSelector);
+}
 
 test('new user creates a project, customizes its theme, and gets the installation snippet', async ({
   page,
@@ -23,18 +48,18 @@ test('new user creates a project, customizes its theme, and gets the installatio
     await page.evaluate(async () => (await document.fonts.load('12px "Geist Mono"')).length),
   ).toBeGreaterThan(0);
   await page.getByRole('button', { name: 'Create an account' }).click();
-  await page.getByLabel('Your name').fill('Alex Morgan');
+  await page.getByLabel('Name').fill('Alex Morgan');
   await page.getByLabel('Email address').fill(`${randomUUID()}@example.invalid`);
   await page.getByLabel('Password', { exact: true }).fill(randomUUID());
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
   await page.getByRole('button', { name: 'Account security', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Your account security' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Account security' })).toBeVisible();
   await expect(page.getByText('No connected tools or websites.')).toBeVisible();
   await page.getByRole('button', { name: 'Feedback', exact: true }).click();
   await page.getByRole('button', { name: 'Create your first project' }).click();
   await page.getByLabel('Project name').fill('Forma website');
   await page.getByRole('button', { name: 'Create project', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Make room for feedback.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Installation' })).toBeVisible();
   await expect(page.getByText(/data-project="prj_/)).toBeVisible();
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('tab', { name: 'dark', exact: true }).click();
@@ -46,6 +71,27 @@ test('new user creates a project, customizes its theme, and gets the installatio
     'color',
     'rgb(0, 0, 0)',
   );
+  const primary = page.getByRole('button', { name: 'Send to agent', exact: true });
+  const outline = page.getByRole('button', { name: '👍 2', exact: true });
+  const secondary = page.locator('[data-slot="avatar-fallback"]').last();
+  const previewMessage = page.getByText('Could we give this button a little more space?', {
+    exact: true,
+  });
+  for (const control of [primary, outline, secondary])
+    expect(await textContrast(control)).toBeGreaterThanOrEqual(4.5);
+  expect(await textContrast(previewMessage, '[data-slot="card"]')).toBeGreaterThanOrEqual(4.5);
+  await primary.hover();
+  expect(await textContrast(primary)).toBeGreaterThanOrEqual(4.5);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.getByRole('tab', { name: 'light', exact: true }).click();
+  await expect(primary.locator('xpath=ancestor::*[@data-slot="card"][1]')).toHaveCSS(
+    'background-color',
+    'rgb(255, 255, 255)',
+  );
+  expect(await textContrast(previewMessage, '[data-slot="card"]')).toBeGreaterThanOrEqual(4.5);
+  expect(await textContrast(secondary)).toBeGreaterThanOrEqual(4.5);
+  await page.getByRole('tab', { name: 'dark', exact: true }).click();
+  await page.emulateMedia({ colorScheme: 'light' });
   await page.getByRole('button', { name: 'Use #72865d', exact: true }).click();
   await page.getByRole('button', { name: 'Save appearance', exact: true }).click();
   await expect(page.getByText('All changes saved')).toBeVisible();
@@ -188,9 +234,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await frame.getByText('Please increase the spacing around this iPhone button.').click();
   await frame.getByRole('button', { name: 'React with 👍' }).click();
   await frame.getByRole('button', { name: 'Send to agent' }).click();
-  await expect(
-    frame.getByText('Waiting for your local connector. Your request is saved.'),
-  ).toBeVisible();
+  await expect(frame.getByText('Queued. Waiting for the agent.')).toBeVisible();
   const data = z
     .object({ threads: z.array(threadSchema) })
     .parse(await (await page.request.get(`/api/projects/${project.id}/threads`)).json());

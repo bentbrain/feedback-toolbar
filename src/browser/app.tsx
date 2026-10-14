@@ -67,7 +67,6 @@ import {
   Conversation,
   Empty,
   JobBadge,
-  MiniWebsite,
   PageHeading,
   Person,
   Section,
@@ -156,31 +155,14 @@ function Auth({
     }
   }
   return (
-    <div className="grid min-h-screen lg:grid-cols-2">
-      <section className="flex flex-col justify-between gap-10 border-b bg-background p-7 sm:p-12 lg:border-b-0 lg:border-r lg:p-16">
+    <div className="flex min-h-screen items-center justify-center px-6 py-12">
+      <section className="w-full max-w-[360px]">
         <Brand />
-        <div className="my-auto max-w-md">
-          <h1 className="text-3xl font-normal leading-tight">website feedback</h1>
-          <p className="mt-6 text-sm leading-7 text-muted-foreground">
-            Comment on an element, discuss it with your team, and send the thread to your agent.
-          </p>
-        </div>
-        <p className="text-xs text-muted-foreground">open source · framework independent</p>
-      </section>
-      <section className="flex items-center justify-center bg-card px-7 py-12">
-        <form onSubmit={(event) => void submit(event)} className="grid w-full max-w-[340px] gap-7">
+        <form onSubmit={(event) => void submit(event)} className="mt-8 grid gap-6">
           <div>
-            <p className="eyebrow mb-3">Your feedback workspace</p>
             <h2 className="text-[28px] font-medium tracking-[-.8px]">
               {signup ? 'Create account' : 'Sign in'}
             </h2>
-            <p className="mt-2 text-xs leading-6 text-muted-foreground">
-              {signup
-                ? 'Create your account to start a feedback project.'
-                : grant
-                  ? 'Sign in to connect your toolbar or local tools.'
-                  : 'Sign in to your projects and conversations.'}
-            </p>
           </div>
           {github ? (
             <Button
@@ -212,7 +194,7 @@ function Auth({
           {localPassword ? (
             <div className="grid gap-5">
               {signup ? (
-                <Field label="Your name" id="name">
+                <Field label="Name" id="name">
                   <Input
                     id="name"
                     name="name"
@@ -240,7 +222,7 @@ function Auth({
                   id="password"
                   name="password"
                   type="password"
-                  placeholder="Your password"
+                  placeholder="Password"
                   autoComplete={signup ? 'new-password' : 'current-password'}
                   minLength={12}
                   maxLength={200}
@@ -266,7 +248,6 @@ function Auth({
           ) : null}
           {allowSignup ? (
             <div className="text-center text-xs text-muted-foreground">
-              {signup ? 'Already have an account?' : 'New to Feedback?'}{' '}
               <Button
                 variant="link"
                 size="xs"
@@ -280,9 +261,6 @@ function Auth({
               </Button>
             </div>
           ) : null}
-          <p className="text-center text-[11px] leading-5 text-muted-foreground">
-            Your feedback account is independent of your website account.
-          </p>
         </form>
       </section>
     </div>
@@ -319,7 +297,7 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
                 ? 'Connection approved.'
                 : info?.kind === 'embed'
                   ? 'Connect this toolbar?'
-                  : 'Connect your local tools?'}
+                  : 'Connect local tools?'}
           </h1>
           {error ? (
             <p className="text-xs text-destructive" role="alert">
@@ -328,9 +306,9 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
           ) : null}
           <p className="text-xs leading-6 text-muted-foreground">
             {info?.denied
-              ? 'The connection was declined. You can close this window.'
+              ? 'Close this window.'
               : info?.authorized
-                ? 'Return to your website or terminal. You can close this window.'
+                ? 'Close this window.'
                 : info?.kind === 'embed'
                   ? `${info.projectName} on ${info.parentOrigin}`
                   : 'Allow CLI and MCP tools to use your account permissions.'}
@@ -344,19 +322,13 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
               <Check className="size-3.5" />
               {info?.kind === 'embed'
                 ? 'Participate in this project'
-                : 'Create and manage your projects'}
+                : 'Create and manage projects'}
             </span>
             <span className="flex gap-2">
               <Check className="size-3.5" />
               {info?.kind === 'embed'
                 ? 'Request agent work if you are an owner'
                 : 'Read feedback and connect project-scoped agents'}
-            </span>
-            <span className="flex gap-2">
-              <ShieldCheck className="size-3.5" />
-              {info?.kind === 'embed'
-                ? 'The website never receives your credentials'
-                : 'Credentials stay outside your repository'}
             </span>
           </div>
           {info && !info.authorized && !info.denied ? (
@@ -466,10 +438,7 @@ function AccountSecurity() {
   };
   return (
     <>
-      <PageHeading
-        title="Your account security"
-        description="Disconnect a lost device or remove access you no longer use."
-      />
+      <PageHeading title="Account security" />
       <Section title="Connected tools and websites">
         {!ready ? (
           <p className="text-xs text-muted-foreground">Loading connections…</p>
@@ -486,7 +455,7 @@ function AccountSecurity() {
                   {connection.kind === 'embed' ? 'Website toolbar' : 'Local CLI / MCP'}
                 </p>
                 <p className="mt-1 break-all text-xs text-muted-foreground">
-                  {connection.parentOrigin ?? 'Account access for your local tools'}
+                  {connection.parentOrigin ?? 'Account access'}
                 </p>
               </div>
               <Button
@@ -503,8 +472,8 @@ function AccountSecurity() {
       </Section>
       <Section title="Recover a lost device">
         <p className="mb-4 text-xs leading-6 text-muted-foreground">
-          Revoke every toolbar and local tool connection, your agent keys, and other browser
-          sessions. This browser stays signed in. Connect your trusted tools again afterwards.
+          Revokes tool connections, agent keys and other browser sessions. This browser stays signed
+          in.
         </p>
         <Button variant="destructive" disabled={busy} onClick={() => void revoke()}>
           Revoke other access
@@ -560,10 +529,9 @@ function NewProject({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="gap-6 p-6 sm:max-w-[460px]">
         <DialogHeader>
-          <p className="eyebrow">Your next website</p>
-          <DialogTitle className="mt-2 text-2xl tracking-tight">Start a conversation.</DialogTitle>
+          <DialogTitle className="mt-2 text-2xl tracking-tight">New project</DialogTitle>
           <DialogDescription className="text-xs leading-6">
-            Create a project for the website you're working on.
+            Choose a name and allowed website origins.
           </DialogDescription>
         </DialogHeader>
         <form className="grid gap-5" onSubmit={(event) => void submit(event)}>
@@ -580,7 +548,7 @@ function NewProject({
           <Field
             label="Website origins"
             id="project-origins"
-            hint="One exact origin per line. The example website is included so you can try the toolbar right away."
+            hint="One HTTPS origin per line. The example origin is prefilled."
           >
             <Textarea
               id="project-origins"
@@ -618,26 +586,17 @@ function Installation({
   const info = installation(project, location.origin);
   return (
     <>
-      <PageHeading
-        title="Make room for feedback."
-        description="One embed. Any framework. All the context you need."
-      />
+      <PageHeading title="Installation" />
       <div className="grid items-start gap-6 xl:grid-cols-2">
-        <Section
-          title="Install the toolbar"
-          description="Choose a script tag or let your agent install it."
-        >
+        <Section title="Install the toolbar">
           <div className="grid gap-7">
             <Step number="1" title="Add this to your shared HTML layout">
-              <p>The project ID is public. No credentials go into your website.</p>
               <Code>{info.snippet}</Code>
             </Step>
             <Step number="2" title="Or ask your agent to do it">
-              <p>Sign in once, then let your agent run setup from your repository.</p>
               <Code>{`feedback-toolbar login --server ${location.origin}\nfeedback-toolbar init --server ${location.origin} --project ${project.id} --file ./index.html --json`}</Code>
             </Step>
             <Step number="3" title="Open your website and sign in">
-              <p>Your Feedback account works independently of the website's login.</p>
               <Button variant="outline" size="sm" onClick={onDemo}>
                 Try on the example website <ArrowUpRight />
               </Button>
@@ -689,9 +648,9 @@ function Installation({
               ) : null}
             </form>
           </Section>
-          <Section title="Using a JavaScript entry point?">
+          <Section title="JavaScript module">
             <p className="mb-4 text-xs leading-6 text-muted-foreground">
-              The package exports a framework-independent mount function with cleanup.
+              Mount once; call destroy on cleanup.
             </p>
             <Code>{`${info.module}\n\n// On unmount:\ntoolbar.destroy();`}</Code>
             <p className="mt-4 text-[11px] leading-6 text-muted-foreground">
@@ -763,12 +722,10 @@ function ToolbarPreview({ theme, name }: { theme: Theme; name: string }) {
             <Button size="sm">
               <Bot /> Send to agent
             </Button>
-            <span className="text-[9px] text-muted-foreground">Visible to your team</span>
           </div>
         </div>
         <div className="flex justify-between border-t px-5 py-3 text-[9px] text-muted-foreground">
           <span>● Alex Morgan</span>
-          <span>Powered by Feedback</span>
         </div>
       </Card>
     </div>
@@ -789,15 +746,9 @@ function Appearance({
   };
   return (
     <>
-      <PageHeading
-        title="Make it feel like yours."
-        description="A consistent toolbar, with your colors and personality."
-      />
+      <PageHeading title="Appearance" />
       <div className="grid items-start gap-6 xl:grid-cols-2">
-        <Section
-          title="Toolbar theme"
-          description="These settings apply across your project's websites."
-        >
+        <Section title="Toolbar theme">
           <div className="grid gap-6">
             <div className="grid gap-3">
               <Label className="text-xs">Color mode</Label>
@@ -914,7 +865,7 @@ function Appearance({
                     onClick={() => {
                       setBusy(true);
                       void onSave({ theme: draft })
-                        .then(() => toast.success('Your toolbar theme is saved.'))
+                        .then(() => toast.success('Theme saved.'))
                         .catch((failure: unknown) => toast.error(messageOf(failure)))
                         .finally(() => {
                           setBusy(false);
@@ -945,19 +896,11 @@ function Appearance({
           <Card className="gap-0 overflow-hidden rounded-xl py-0 shadow-none">
             <div className="flex items-center justify-between border-b px-6 py-5">
               <h3 className="text-sm font-medium">Live preview</h3>
-              <span className="eyebrow">Your toolbar</span>
             </div>
             <div className="preview-dots flex min-h-[380px] items-center justify-center bg-muted/50 p-6">
               <ToolbarPreview theme={draft} name={project.name} />
             </div>
-            <p className="border-t p-4 text-center text-[10px] text-muted-foreground">
-              Example conversation · Updates as you customize
-            </p>
           </Card>
-          <p className="mt-5 text-[11px] leading-6 text-muted-foreground">
-            Your website's stylesheets won't change the toolbar. Button text adjusts for contrast
-            with your accent color.
-          </p>
         </div>
       </div>
     </>
@@ -976,10 +919,7 @@ function People({
   const [busy, setBusy] = useState(false);
   return (
     <>
-      <PageHeading
-        title="Better together."
-        description="Invite your collaborators and choose what they can do."
-      />
+      <PageHeading title="Members" />
       <div className="grid items-start gap-6 xl:grid-cols-2">
         <Section title="Project members">
           <div className="-m-6">
@@ -1088,16 +1028,10 @@ function Agents({
   const [busy, setBusy] = useState(false);
   return (
     <>
-      <PageHeading
-        title="Put your feedback to work."
-        description="Connect the agent you already use. Keep your credentials local."
-      />
+      <PageHeading title="Agents" />
       <div className="grid items-start gap-6 xl:grid-cols-2">
         <div className="grid gap-6">
-          <Section
-            title="Connect your local agent"
-            description="Scheduled feedback checks in the harness you already use."
-          >
+          <Section title="Connect an agent">
             <div className="grid gap-7">
               <Step number="1" title="Sign in from your terminal">
                 <Code>{`feedback-toolbar login --server ${location.origin}`}</Code>
@@ -1130,10 +1064,7 @@ function Agents({
           </Section>
         </div>
         <div className="grid gap-6">
-          <Section
-            title="Agent connections"
-            description="Project-scoped credentials. Revoke access at any time."
-          >
+          <Section title="Agent connections" description="Access is limited to this project.">
             {agents.length ? (
               <div className="-m-6">
                 {agents.map((agent) => (
@@ -1167,8 +1098,8 @@ function Agents({
               </div>
             ) : (
               <Empty
-                title="Your agent has a seat waiting."
-                description="Link a local connector or create a scoped credential below."
+                title="No agent connections"
+                description="Link a connector or create a credential."
                 symbol={<Bot className="size-5" />}
               />
             )}
@@ -1213,7 +1144,7 @@ function Agents({
                 {credential ? (
                   <div>
                     <p className="mb-3 text-[11px] leading-5 text-muted-foreground">
-                      Copy this now. It won't be shown again. Store it outside your repository.
+                      Copy now; this credential is shown once. Keep it outside the repository.
                     </p>
                     <Code>{credential}</Code>
                   </div>
@@ -1392,7 +1323,7 @@ function Dashboard({
         <aside className="flex min-w-0 flex-col gap-6 border-b bg-card p-5 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:py-7">
           <Brand />
           <div className="rounded-lg border bg-muted/30 p-3">
-            <p className="eyebrow mb-2 text-[9px]">Your project</p>
+            <p className="eyebrow mb-2 text-[9px]">Project</p>
             <Choice
               label=""
               value={p?.id ?? ''}
@@ -1440,15 +1371,12 @@ function Dashboard({
             <Plus className="size-3.5" /> New project
           </Button>
           <div className="mt-auto hidden space-y-5 lg:block">
-            <p className="flex items-center gap-2 px-2 text-[10px] text-muted-foreground">
-              <span className="size-1.5 rounded-full bg-primary" /> Your feedback stays private
-            </p>
             <div className="flex items-center gap-2 border-t pt-4">
               <Person name={user.name} />
               <div className="min-w-0 flex-1 text-xs">
                 <p>{user.name}</p>
                 <p className="mt-1 text-[10px] capitalize text-muted-foreground">
-                  {p?.role ?? 'Your workspace'}
+                  {p?.role ?? 'Account'}
                 </p>
               </div>
               <DropdownMenu>
@@ -1469,17 +1397,11 @@ function Dashboard({
         <main className="min-w-0">
           <header className="flex h-[74px] items-center justify-between gap-4 border-b bg-card/60 px-6 sm:px-10">
             <div className="flex min-w-0 items-center gap-3 text-[11px] text-muted-foreground">
-              <span className="hidden sm:inline">Workspace</span>
-              <span className="hidden sm:inline">/</span>
-              <span className="truncate text-secondary-foreground">{p?.name ?? 'Welcome'}</span>
+              <span className="truncate text-secondary-foreground">{p?.name ?? 'Projects'}</span>
               <span>/</span>
               <span>{navigation.find((item) => item.id === view)?.label}</span>
             </div>
             <div className="flex shrink-0 items-center gap-4">
-              <span className="hidden items-center gap-2 text-[10px] text-muted-foreground xl:flex">
-                <span className="size-1.5 rounded-full bg-primary" />
-                Feedback service connected
-              </span>
               {p ? (
                 <Button variant="outline" size="sm" onClick={tryDemo}>
                   Open example <ArrowUpRight />
@@ -1498,18 +1420,11 @@ function Dashboard({
           </header>
           <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-10 sm:py-10">
             {!ready ? (
-              <Empty
-                title="Opening your workspace…"
-                description="Loading your projects and conversations."
-                symbol={<Loader2 className="size-5 animate-spin" />}
-              />
+              <Empty title="Loading…" symbol={<Loader2 className="size-5 animate-spin" />} />
             ) : view === 'account' ? (
               <AccountSecurity />
             ) : !p ? (
-              <Empty
-                title="Bring your website into the loop."
-                description="Create a project, add the toolbar, and give your team and agent a place to work through the details."
-              >
+              <Empty title="No projects" description="Create a project to install the toolbar.">
                 <Button
                   onClick={() => {
                     setNewOpen(true);
@@ -1517,9 +1432,6 @@ function Dashboard({
                 >
                   <Plus /> Create your first project
                 </Button>
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  An agent can do this with the CLI or MCP tools.
-                </p>
               </Empty>
             ) : view === 'install' ? (
               <Installation key={p.id} project={p} onSave={saveProject} onDemo={tryDemo} />
@@ -1531,38 +1443,11 @@ function Dashboard({
               <Agents project={p} agents={agents} onReload={refresh} />
             ) : (
               <>
-                <PageHeading
-                  title="Good things start here."
-                  description="Your team, your website, and your agent. One conversation."
-                >
+                <PageHeading title="Feedback">
                   <Button className="h-9" onClick={tryDemo}>
                     <Target /> Leave feedback <ArrowUpRight />
                   </Button>
                 </PageHeading>
-                <div className="mb-7 grid items-center gap-6 overflow-hidden rounded-xl border border-border bg-muted/40 p-7 md:grid-cols-[1.15fr_1fr]">
-                  <div>
-                    <p className="eyebrow">Feedback that finds its way home</p>
-                    <h2 className="mt-3 text-[21px] font-medium tracking-[-.6px]">
-                      Point at it. Talk about it. Improve it.
-                    </h2>
-                    <p className="my-3 max-w-sm text-xs leading-6 text-muted-foreground">
-                      Bring context to every comment. Select an element on your website and let your
-                      team or agent take it from there.
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        changeView('install');
-                      }}
-                    >
-                      Set up your toolbar <ArrowUpRight />
-                    </Button>
-                  </div>
-                  <div className="hidden px-4 md:block">
-                    <MiniWebsite />
-                  </div>
-                </div>
                 <div className="mb-4 flex items-center justify-between gap-4">
                   <h2 className="text-base font-medium">
                     Conversations{' '}
@@ -1660,17 +1545,17 @@ function Dashboard({
                     <Empty
                       title={
                         search
-                          ? 'No matching conversations.'
+                          ? 'No matching feedback'
                           : filter === 'resolved'
-                            ? 'A clean slate.'
-                            : 'The first conversation is yours.'
+                            ? 'No resolved feedback'
+                            : 'No feedback'
                       }
                       description={
                         search
                           ? 'Try another search.'
                           : filter === 'resolved'
                             ? 'Resolved feedback will appear here.'
-                            : 'Open your website, select an element, and leave your first piece of feedback.'
+                            : 'Select an element on the website to leave feedback.'
                       }
                     >
                       {!search && filter !== 'resolved' ? (
@@ -1725,10 +1610,6 @@ function Dashboard({
                     Load earlier conversations
                   </Button>
                 ) : null}
-                <p className="mt-5 flex items-center justify-center gap-2 text-[10px] text-muted-foreground">
-                  <Users className="size-3" />
-                  Only members of {p.name} can see these conversations.
-                </p>
               </>
             )}
           </div>
@@ -1742,7 +1623,7 @@ function Dashboard({
           setSelected(next.id);
           setView('install');
           await refresh(next.id);
-          toast.success('Your project is ready.');
+          toast.success('Project created.');
         }}
       />
       <Dialog
@@ -1753,8 +1634,7 @@ function Dashboard({
       >
         <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px]">
           <DialogHeader className="border-b px-5 py-5">
-            <p className="eyebrow">Element feedback</p>
-            <DialogTitle className="text-lg">The conversation</DialogTitle>
+            <DialogTitle className="text-lg">Thread</DialogTitle>
             <DialogDescription className="sr-only">
               Feedback attached to a website element, with replies and agent work.
             </DialogDescription>
@@ -1785,7 +1665,7 @@ function Dashboard({
                   body: { revision: active.revision, idempotencyKey: crypto.randomUUID() },
                 });
                 await refresh();
-                toast.success('Feedback queued for your local agent.');
+                toast.success('Queued.');
               }}
               onResolve={async () => {
                 await request(`/api/threads/${active.id}`, {
@@ -1884,11 +1764,7 @@ function App() {
       {error ? (
         <Empty title="Couldn't open Feedback." description={error} />
       ) : !ready ? (
-        <Empty
-          title="Opening Feedback…"
-          description="Connecting to your workspace."
-          symbol={<Loader2 className="animate-spin" />}
-        />
+        <Empty title="Loading…" symbol={<Loader2 className="animate-spin" />} />
       ) : !user ? (
         <Auth
           onSignIn={setUser}

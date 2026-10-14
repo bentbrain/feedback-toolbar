@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { retainActiveAssets, verifyPublishedAssets } from '../scripts/release-assets.js';
 import { token } from '../src/server/security.js';
 import { signProxyRequest, verifiedProxyIp } from '../src/server/proxy-signature.js';
 
@@ -51,6 +55,12 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   const backend = new Hono();
   let requests = 0;
   let activeOrigin = '';
+  let activeVersion = '1'.repeat(40);
+  const published = new Map<string, string>();
+  backend.get('/health', async (c) => {
+    assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
+    return c.json({ ok: true, assetVersion: activeVersion, serviceOrigin: activeOrigin });
+  });
   backend.get('/api/config', async (c) => {
     assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
     assert.equal(c.req.header('Authorization'), undefined);
@@ -76,6 +86,13 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   process.env.FEEDBACK_API_ORIGIN = `http://127.0.0.1:${z.object({ port: z.number() }).parse(api.address()).port}`;
   process.env.FEEDBACK_PROXY_SECRET = secret;
   const server = createServer((req, res) => {
+    // The fixture models Vercel's trusted ingress and static asset routing.
+    req.headers['x-vercel-forwarded-for'] = '203.0.113.44';
+    const asset = published.get(req.url ?? '');
+    if (asset !== undefined) {
+      res.end(asset);
+      return;
+    }
     void proxy(req, res);
   });
   await new Promise<void>((resolve) => {
@@ -151,6 +168,34 @@ void test('the Vercel function replaces forged visitor headers and preserves red
     const premature = await publicRequest('/api/mutate', 'POST');
     assert.equal(premature.status, 403);
   }
+  // A retried deployment prepares fresh retained assets through a noncanonical alias.
+  activeOrigin = 'https://previous.example';
+  process.env.FEEDBACK_PREVIOUS_URL = activeOrigin;
+  const retryDirectory = await mkdtemp(join(tmpdir(), 'feedback-cutover-retry-'));
+  t.after(() => rm(retryDirectory, { recursive: true, force: true }));
+  const nextVersion = '2'.repeat(40);
+  const files = ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'styles.css'];
+  const retrieve = async (version: string, destination: string) => {
+    assert.equal(version, activeVersion);
+    for (const file of files) await writeFile(`${destination}/${file}`, `${version}:${file}`);
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await rm(retryDirectory, { recursive: true, force: true });
+    await mkdir(`${retryDirectory}/${nextVersion}`, { recursive: true });
+    for (const file of files)
+      await writeFile(`${retryDirectory}/${nextVersion}/${file}`, `${nextVersion}:${file}`);
+    await retainActiveAssets(retryDirectory, origin, nextVersion, retrieve);
+    for (const version of [activeVersion, nextVersion])
+      for (const file of files) published.set(`/assets/${version}/${file}`, `${version}:${file}`);
+    await verifyPublishedAssets(retryDirectory, origin);
+    const running = await fetch(`${origin}/health`, { redirect: 'error' });
+    assert.equal(running.status, 200);
+    assert.equal(
+      z.object({ assetVersion: z.string() }).parse(await running.json()).assetVersion,
+      activeVersion,
+    );
+  }
+  activeVersion = nextVersion;
   activeOrigin = 'https://toolbar.example';
   // The adapter sees an HTTP socket; the public canonical HTTPS Host must still work.
   const activated = await publicRequest('/api/mutate', 'POST');

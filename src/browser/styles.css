@@ -30,8 +30,10 @@
   --radius-xl: calc(var(--radius) * 1.4);
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
-:root {
+:root,
+[data-mode='light'] {
   font-family: 'Geist Mono', ui-monospace, monospace;
   font-synthesis: none;
   --background: #fff;
@@ -59,10 +61,10 @@
   --card: #000;
   --popover: #000;
   --primary: #2870ff;
-  --secondary: #10182b;
-  --muted: #10131c;
+  --secondary: #000;
+  --muted: #000;
   --muted-foreground: #a2aec8;
-  --accent: #10182b;
+  --accent: #000;
   --destructive: #ff8b85;
 }
 @layer base {

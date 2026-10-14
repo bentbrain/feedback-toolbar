@@ -1,0 +1,259 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Lint
+            command: bun run format:check && bun run lint
+          - name: Typecheck
+            command: bun run typecheck
+          - name: Knip
+            command: bun run knip
+          - name: Tests
+            command: bun run test
+          - name: Build
+            command: bun run build && bun run worker:check && bun run build:vercel && bun run deploy:vercel --dry-run
+          - name: Dependency audit
+            command: bun audit --audit-level=high
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - run: ${{ matrix.command }}
+
+  browser:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run build && bun run test:e2e
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: failure()
+        with:
+          name: browser-failures
+          path: test-results/
+          retention-days: 3
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@f3c49fd1ef3281abc41069b3dd22807a60c963f6 # v4
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@f3c49fd1ef3281abc41069b3dd22807a60c963f6 # v4
+        id: analysis
+        with:
+          category: /language:javascript-typescript
+          wait-for-processing: true
+      - name: Require a clean analysis
+        env:
+          SARIF_DIRECTORY: ${{ steps.analysis.outputs.sarif-output }}
+        run: |
+          node --input-type=module - <<'JS'
+          import { readFile, readdir } from 'node:fs/promises';
+          import { join } from 'node:path';
+          const directory = process.env.SARIF_DIRECTORY;
+          if (!directory) throw new Error('CodeQL did not produce a SARIF directory.');
+          const reports = (await readdir(directory)).filter(file => file.endsWith('.sarif'));
+          if (!reports.length) throw new Error('CodeQL produced no analysis reports.');
+          let findings = 0;
+          for (const file of reports) {
+            const report = JSON.parse(await readFile(join(directory, file), 'utf8'));
+            if (!Array.isArray(report.runs) || !report.runs.length) throw new Error('CodeQL report is incomplete.');
+            for (const run of report.runs) {
+              if (!Array.isArray(run.results)) throw new Error('CodeQL results are missing.');
+              findings += run.results.length;
+            }
+          }
+          if (findings) throw new Error(`CodeQL reported ${findings} findings. Resolve them before merging or deploying.`);
+          console.log('CodeQL reported no findings.');
+          JS
+
+  dependencies:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install verified scanner
+        run: |
+          curl --fail --location --output /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz' | sha256sum --check
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+      - name: Scan repository history
+        run: /tmp/gitleaks git --redact --log-opts=--all
+
+  gate:
+    name: Required checks
+    if: always()
+    needs: [quality, browser, codeql, dependencies, secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all gates
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          BROWSER: ${{ needs.browser.result }}
+          CODEQL: ${{ needs.codeql.result }}
+          DEPENDENCIES: ${{ needs.dependencies.result }}
+          SECRETS: ${{ needs.secrets.result }}
+        run: |
+          test "$QUALITY" = success
+          test "$BROWSER" = success
+          test "$CODEQL" = success
+          test "$SECRETS" = success
+          test "$DEPENDENCIES" = success || test "$DEPENDENCIES" = skipped
+
+  deploy:
+    name: Deploy production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: gate
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://feedback-toolbar-bentbrain.vercel.app
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - name: Verify deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          FEEDBACK_PROXY_SECRET: ${{ secrets.FEEDBACK_PROXY_SECRET }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ vars.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Set CLOUDFLARE_API_TOKEN using scripts/setup-deploy-secrets.sh'; exit 1; }
+          test -n "$VERCEL_TOKEN" || { echo 'Set VERCEL_TOKEN using scripts/setup-deploy-secrets.sh'; exit 1; }
+          test -n "$FEEDBACK_PROXY_SECRET" || { echo 'Set FEEDBACK_PROXY_SECRET'; exit 1; }
+          test -n "$BETTER_AUTH_SECRET" || { echo 'Set BETTER_AUTH_SECRET'; exit 1; }
+          test -n "$AUTH_GITHUB_CLIENT_ID" || { echo 'Set AUTH_GITHUB_CLIENT_ID'; exit 1; }
+          test -n "$AUTH_GITHUB_CLIENT_SECRET" || { echo 'Set AUTH_GITHUB_CLIENT_SECRET'; exit 1; }
+      - name: Prepare tested frontend
+        run: bun run build && bun run build:vercel --retain-active
+        env:
+          FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}
+          FEEDBACK_API_ORIGIN: ${{ vars.FEEDBACK_API_ORIGIN }}
+          GH_TOKEN: ${{ github.token }}
+      - name: Archive and verify commit assets
+        run: node --import tsx scripts/publish-assets.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Apply D1 migrations
+        run: bun run db:migrate
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Configure maintained authentication
+        run: node --import tsx scripts/configure-auth.ts
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FEEDBACK_PROXY_SECRET: ${{ secrets.FEEDBACK_PROXY_SECRET }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ vars.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+      - name: Link Vercel project
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          node --input-type=module - <<'JS'
+          import { mkdir, writeFile } from 'node:fs/promises';
+          await mkdir('.vercel', { recursive: true });
+          await writeFile('.vercel/project.json', JSON.stringify({ orgId: process.env.VERCEL_ORG_ID, projectId: process.env.VERCEL_PROJECT_ID }));
+          JS
+      - name: Publish and verify new assets with the active release retained
+        run: bun run deploy:vercel
+        env:
+          FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          FEEDBACK_PROXY_SECRET: ${{ secrets.FEEDBACK_PROXY_SECRET }}
+          FEEDBACK_API_ORIGIN: ${{ vars.FEEDBACK_API_ORIGIN }}
+      - name: Deploy API Worker
+        run: bun run deploy:worker --var "ASSET_VERSION:$GITHUB_SHA"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Verify production health
+        env:
+          FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}
+        run: |
+          curl --fail --retry 5 --retry-delay 5 "$FEEDBACK_URL/health"

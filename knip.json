@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/browser/app.tsx",
+    "src/server/vercel-proxy.ts",
+    "src/browser/toolbar.tsx",
+    "src/browser/embed.ts",
+    "src/browser/embed-module.ts",
+    "tests/**/*.test.ts",
+    "e2e/**/*.spec.ts",
+    "src/browser/styles.css"
+  ],
+  "project": ["src/**/*", "scripts/**/*.ts", "tests/**/*.ts", "e2e/**/*.ts", "src/**/*.css"],
+  "ignoreDependencies": []
+}

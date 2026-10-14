@@ -44,7 +44,7 @@ function EmojiPicker({
   return (
     <EmojiPickerPrimitive.Root
       className={cn(
-        'bg-popover text-popover-foreground isolate flex h-full w-full min-w-0 flex-col overflow-hidden rounded-[var(--radius)]',
+        'bg-popover text-popover-foreground isolate flex h-full w-full min-w-0 flex-col overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--radius)]',
         className,
       )}
       data-slot="emoji-picker"
@@ -59,7 +59,7 @@ function EmojiPickerSearch({
 }: React.ComponentProps<typeof EmojiPickerPrimitive.Search>) {
   return (
     <div
-      className={cn('flex h-9 items-center gap-2 border-b px-3', className)}
+      className={cn('flex h-9 shrink-0 items-center gap-2 border-b px-3', className)}
       data-slot="emoji-picker-search-wrapper"
     >
       <SearchIcon className="size-4 shrink-0 opacity-50" />
@@ -125,7 +125,7 @@ function EmojiPickerContent({
 }: React.ComponentProps<typeof EmojiPickerPrimitive.Viewport>) {
   return (
     <EmojiPickerPrimitive.Viewport
-      className={cn('outline-hidden relative flex-1', className)}
+      className={cn('outline-hidden relative min-h-24 flex-1', className)}
       data-slot="emoji-picker-viewport"
       {...props}
     >
@@ -158,7 +158,7 @@ function EmojiPickerFooter({ className, ...props }: React.ComponentProps<'div'>)
   return (
     <div
       className={cn(
-        'max-w-(--frimousse-viewport-width) flex w-full min-w-0 items-center gap-1 border-t p-2',
+        'max-w-(--frimousse-viewport-width) flex w-full min-w-0 shrink-0 items-center gap-1 border-t p-2',
         className,
       )}
       data-slot="emoji-picker-footer"

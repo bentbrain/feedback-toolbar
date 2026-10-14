@@ -447,3 +447,43 @@ test.describe('touch emoji grid', () => {
     await expect(popup).toBeHidden();
   });
 });
+
+test.describe('short touch emoji picker', () => {
+  test.use({ hasTouch: true });
+
+  test('favourites and searched results remain tappable in short landscape viewports', async ({
+    page,
+    baseURL,
+  }) => {
+    const f = await fixture(page, baseURL);
+    const actorId = f.thread.messages[0]?.actorId;
+    if (!actorId) throw new Error('Missing fixture actor');
+    await page.goto('/');
+    await page.evaluate((actorId) => {
+      localStorage.setItem(
+        `feedback-emoji-favourites-v1:${actorId}`,
+        JSON.stringify(
+          ['😀', '😁', '😂', '😃', '😄', '😅', '😆', '😉'].map((emoji) => ({ emoji, count: 1 })),
+        ),
+      );
+    }, actorId);
+    await page.getByText('Searchable emoji feedback', { exact: true }).click();
+    for (const height of [320, 260, 240]) {
+      await page.setViewportSize({ width: 568, height });
+      await page.getByRole('button', { name: 'Add reaction', exact: true }).click();
+      const popup = page.locator('[data-slot="popover-content"]');
+      const favourite = popup
+        .getByRole('group', { name: 'Favourite emojis' })
+        .getByRole('button')
+        .last();
+      await favourite.scrollIntoViewIfNeeded();
+      await expect(favourite).toBeInViewport({ ratio: 1 });
+      await popup.getByRole('textbox', { name: 'Search emojis', exact: true }).fill('rocket');
+      const rocket = popup.getByRole('gridcell', { name: 'Rocket', exact: true });
+      await rocket.scrollIntoViewIfNeeded();
+      await expect(rocket).toBeInViewport({ ratio: 1 });
+      await rocket.tap({ timeout: 1500 });
+      await expect(popup).toBeHidden();
+    }
+  });
+});

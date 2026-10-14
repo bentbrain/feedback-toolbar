@@ -19,9 +19,21 @@ for (const mode of ['cancel', 'normal-exit']) {
       const directory = await mkdtemp(join(tmpdir(), 'feedback-process-'));
       t.after(() => rm(directory, { recursive: true, force: true }));
       const result = join(directory, 'late-result.txt');
-      const tool = `const fs=require('node:fs'); process.on('SIGTERM',()=>{}); console.log('ready'); setTimeout(()=>fs.writeFileSync(${JSON.stringify(result)},'cancelled-write'),2000); setInterval(()=>{},1000);`;
-      const parent = `const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e',${JSON.stringify(tool)}],{detached:${JSON.stringify(mode === 'cancel')},stdio:['ignore','pipe','ignore']}); child.stdout.once('data',()=>{console.log('ready'); ${mode === 'normal-exit' ? 'setTimeout(()=>process.exit(0),200);' : ''}}); process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);`;
-      const child = spawn(process.execPath, ['-e', parent], {
+      const parent = `
+        const {spawn} = require('node:child_process');
+        const tool = "const fs=require('node:fs'); process.on('SIGTERM',()=>{}); console.log('ready'); setTimeout(()=>fs.writeFileSync('late-result.txt','cancelled-write'),2000); setInterval(()=>{},1000);";
+        const child = spawn(process.execPath, ['-e', tool], {
+          detached: process.argv[1] === 'cancel', stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        child.stdout.once('data', () => {
+          console.log('ready');
+          if (process.argv[1] === 'normal-exit') setTimeout(() => process.exit(0), 200);
+        });
+        process.on('SIGTERM', () => process.exit(0));
+        setInterval(() => {}, 1000);
+      `;
+      const child = spawn(process.execPath, ['-e', parent, mode], {
+        cwd: directory,
         detached: true,
         stdio: ['ignore', 'pipe', 'ignore'],
       });

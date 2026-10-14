@@ -6,6 +6,27 @@ export default defineConfig({
   workers: 1,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
-  use: { baseURL: 'http://localhost:44320', trace: 'off', screenshot: 'only-on-failure' },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  use: {
+    baseURL: `http://localhost:${process.env.FEEDBACK_E2E_PORT ?? '44320'}`,
+    trace: 'off',
+    screenshot: 'only-on-failure',
+  },
+  projects: [
+    {
+      name: 'webkit-mobile',
+      testMatch: ['theme.spec.ts', 'reactions.spec.ts'],
+      use: { ...devices['iPhone 13'] },
+    },
+    { name: 'chromium', testIgnore: 'theme.spec.ts', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium-native-dark',
+      testMatch: 'theme.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: 'chromium',
+        colorScheme: null,
+        launchOptions: { args: ['--force-dark-mode'] },
+      },
+    },
+  ],
 });

@@ -1306,3 +1306,169 @@ void test('native OAuth token revocation prevents concurrent delegation to a fre
     );
   }
 });
+
+void test('emoji data is public and retains cache headers through global security middleware', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  for (const file of ['data.json', 'messages.json', 'license.txt']) {
+    const path = `/api/emoji-data/v1/en/${file}`;
+    const response = await f.call(path);
+    assert.equal(response.status, 200);
+    assert.equal(
+      response.headers.get('cache-control'),
+      'public, max-age=3600, stale-while-revalidate=86400',
+    );
+    assert.match(response.headers.get('etag') ?? '', /^"[a-f0-9]+"$/);
+    assert.match(response.headers.get('content-security-policy') ?? '', /connect-src 'self'/);
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(
+      response.headers.get('link'),
+      '</api/emoji-data/v1/en/license.txt>; rel="license"',
+    );
+    const head = await f.call(path, { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get('etag'), response.headers.get('etag'));
+    assert.equal(await head.text(), '');
+  }
+  assert.equal((await f.call('/api/emoji-data/v1/en/nope.json')).status, 404);
+  assert.equal((await f.call('/api/emoji-data/v1/fr/data.json')).status, 401);
+});
+
+void test('arbitrary Unicode reactions toggle per actor with validation, existing toggle semantics and authorization', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const outsider = await f.account('Outsider');
+  const viewer = await f.account('Viewer');
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id);
+  const otherProject = await f.project(owner.cookie);
+  const otherThread = await f.thread(owner.cookie, otherProject.id);
+  const messageId = thread.messages[0]?.id;
+  assert.ok(messageId);
+  const path = `/api/threads/${thread.id}/reactions`;
+  const body = { messageId, emoji: '👩🏽‍💻' };
+  assert.equal((await f.call(path, { method: 'POST', body })).status, 401);
+  assert.equal((await f.call(path, { method: 'POST', body, cookie: outsider.cookie })).status, 403);
+  await f.call(`/api/projects/${project.id}/members`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { email: viewer.email, role: 'viewer' },
+  });
+  assert.equal((await f.call(path, { method: 'POST', body, cookie: viewer.cookie })).status, 403);
+  assert.equal(
+    (
+      await f.call(path, {
+        method: 'POST',
+        body,
+        cookie: owner.cookie,
+        origin: 'https://attacker.example',
+      })
+    ).status,
+    403,
+  );
+  const agent = await f.agent(owner.cookie, project.id);
+  const embedHeaders = { 'x-feedback-project': project.id, 'x-feedback-origin': website };
+  assert.equal(
+    (
+      await f.call(`/api/threads/${otherThread.id}/reactions`, {
+        method: 'POST',
+        body,
+        cookie: owner.cookie,
+        headers: embedHeaders,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/threads/${otherThread.id}/reactions`, {
+        method: 'POST',
+        body,
+        bearer: agent,
+      })
+    ).status,
+    403,
+  );
+  for (const emoji of ['word', 'https://example.com/👍', '👍👍', '👍\n', '', '👩🏽‍💻👨‍👩‍👧‍👦']) {
+    assert.equal(
+      (await f.call(path, { method: 'POST', cookie: owner.cookie, body: { messageId, emoji } }))
+        .status,
+      400,
+    );
+  }
+  assert.equal(
+    (
+      await f.call(path, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { messageId: 'missing', emoji: '🦋' },
+      })
+    ).status,
+    404,
+  );
+  const parse = async (response: Response) => {
+    assert.equal(response.status, 200);
+    return z.object({ thread: threadSchema }).parse(await response.json()).thread;
+  };
+  const first = await parse(
+    await f.call(path, { method: 'POST', cookie: owner.cookie, body, key: 'unicode-reaction' }),
+  );
+  const replay = await parse(
+    await f.call(path, { method: 'POST', cookie: owner.cookie, body, key: 'unicode-reaction' }),
+  );
+  assert.equal(replay.messages[0]?.reactions.length, 0);
+  await parse(
+    await f.call(path, { method: 'POST', cookie: owner.cookie, headers: embedHeaders, body }),
+  );
+  assert.equal(first.messages[0]?.reactions.length, 1);
+  const byAgent = await parse(await f.call(path, { method: 'POST', bearer: agent, body }));
+  assert.equal(byAgent.messages[0]?.reactions.length, 2);
+  const removed = await parse(
+    await f.call(path, { method: 'POST', cookie: owner.cookie, headers: embedHeaders, body }),
+  );
+  assert.equal(removed.messages[0]?.reactions.length, 1);
+  assert.equal(removed.messages[0].reactions[0]?.name, 'Local agent');
+  for (const emoji of ['🦋', '🇦🇺', '🏳️‍🌈', '👨‍👩‍👧‍👦', '🧑🏿‍❤️‍💋‍🧑🏻']) {
+    const added = await parse(
+      await f.call(path, { method: 'POST', cookie: owner.cookie, body: { messageId, emoji } }),
+    );
+    assert.ok(added.messages[0]?.reactions.some((reaction) => reaction.emoji === emoji));
+  }
+});
+
+void test('Unicode reaction mutations retain the authenticated API rate limit', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id);
+  const messageId = thread.messages[0]?.id;
+  assert.ok(messageId);
+  let limited = false;
+  let successful = 0;
+  for (let attempt = 0; attempt < 245; attempt++) {
+    const response = await f.call(`/api/threads/${thread.id}/reactions`, {
+      method: 'POST',
+      cookie: owner.cookie,
+      body: { messageId, emoji: '🦋' },
+    });
+    if (response.status === 429) limited = true;
+    else {
+      assert.equal(limited, false);
+      assert.equal(response.status, 200);
+      successful++;
+    }
+  }
+  assert.equal(limited, true);
+  assert.ok(successful > 200 && successful <= 240);
+});

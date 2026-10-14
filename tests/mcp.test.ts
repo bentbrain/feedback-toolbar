@@ -211,5 +211,48 @@ void test(
       ).error,
       true,
     );
+    const reactionTool = tools.tools.find((tool) => tool.name === 'react_to_message');
+    assert.ok(reactionTool);
+    const emojiInput = z
+      .object({
+        properties: z.object({
+          emoji: z.object({
+            type: z.literal('string'),
+            maxLength: z.literal(64),
+            pattern: z.string(),
+          }),
+        }),
+      })
+      .parse(reactionTool.inputSchema).properties.emoji;
+    assert.equal(new RegExp(emojiInput.pattern).test('👩🏽‍💻'), true);
+    assert.equal(new RegExp(emojiInput.pattern).test('👩🏽‍💻👩🏽‍💻'), false);
+    const messageId = thread.messages[0]?.id;
+    assert.ok(messageId);
+    for (const emoji of ['🦋', '👍🏽', '🇦🇺', '👨‍👩‍👧‍👦']) {
+      const args = { threadId: thread.id, messageId, emoji };
+      const reacted = await tool('react_to_message', args);
+      assert.equal(reacted.error, false);
+      assert.ok(
+        z
+          .object({ thread: threadSchema })
+          .parse(JSON.parse(reacted.text))
+          .thread.messages[0]?.reactions.some(
+            (reaction) => reaction.emoji === emoji && reaction.name === 'Scheduled harness',
+          ),
+      );
+      const removed = await tool('react_to_message', args);
+      assert.equal(removed.error, false);
+      assert.equal(
+        z
+          .object({ thread: threadSchema })
+          .parse(JSON.parse(removed.text))
+          .thread.messages[0]?.reactions.some((reaction) => reaction.emoji === emoji),
+        false,
+      );
+    }
+    assert.equal(
+      (await tool('react_to_message', { threadId: thread.id, messageId, emoji: 'words' })).error,
+      true,
+    );
   },
 );

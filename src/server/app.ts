@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   credentialSchema,
   defaultTheme,
+  emojiSchema,
   installation,
   jobSchema,
   memberSchema,
@@ -21,6 +22,7 @@ import type { Credential, Project, Thread, User } from '../shared/models.js';
 import { digest, HttpError, requireValue, token } from './security.js';
 import type { DocumentStore } from './document-store.js';
 import { createAuthentication, connectionMetadata } from './auth.js';
+import { emojiDataResponse } from './emoji-data.js';
 import type { AuthenticationOptions } from './auth.js';
 
 interface Options {
@@ -347,6 +349,10 @@ export function createApp(options: Options) {
     await next();
   });
 
+  app.get('/api/emoji-data/v1/en/:file', (c) => {
+    const response = emojiDataResponse(c.req.param('file'));
+    return c.newResponse(response.body, response);
+  });
   app.get('/api/config', (c) =>
     c.json({
       url,
@@ -964,7 +970,7 @@ export function createApp(options: Options) {
     const thread = requireValue(await store.get('threads', c.req.param('id'), threadSchema));
     await access(c.get('principal'), thread.projectId, true);
     const input = z
-      .object({ messageId: z.string(), emoji: z.enum(['👍', '❤️', '👀', '🎉', '🚀']) })
+      .object({ messageId: z.string(), emoji: emojiSchema })
       .strict()
       .parse(await c.req.json());
     const principal = c.get('principal');

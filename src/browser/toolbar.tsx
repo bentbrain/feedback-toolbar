@@ -1,7 +1,24 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import { CSPProvider } from '@base-ui/react/csp-provider';
-import { ArrowLeft, ArrowUpRight, MessageCircle, Plus, Target, X, Loader2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  MessageCircle,
+  Plus,
+  Target,
+  X,
+  Loader2,
+  MapPin,
+} from 'lucide-react';
 import { z } from 'zod';
 import { toast } from 'sonner';
 import {
@@ -15,6 +32,7 @@ import {
 } from '../shared/models.js';
 import type { Theme, Thread } from '../shared/models.js';
 import { createConnectionStore } from './connection-store.js';
+import { newestJob, newestThread, requestWork, useMutationState } from './mutations.js';
 import { ApiError, applyTheme, messageOf, relativeTime, request, rootElement } from './ui.js';
 import { Button } from './components/ui/button.js';
 import { Badge } from './components/ui/badge.js';
@@ -25,6 +43,7 @@ import { Toaster } from './components/ui/sonner.js';
 import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
 import type { Work } from './components/common.js';
 import { ConnectionError, deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
+import { boundedMessage, maxPins } from './pin-protocol.js';
 
 const parameters = new URLSearchParams(location.search);
 const projectId = parameters.get('project') ?? '';
@@ -34,6 +53,15 @@ const embedHeaders = { 'x-feedback-project': projectId, 'x-feedback-origin': par
 const send = (data: unknown) => {
   parent.postMessage(data, parentOrigin);
 };
+function applyToolbarTheme(theme: Theme) {
+  applyTheme(theme);
+  const rendered = {
+    ...theme,
+    mode: document.documentElement.dataset.mode === 'dark' ? 'dark' : 'light',
+    accent: document.documentElement.style.getPropertyValue('--primary').trim(),
+  };
+  send({ type: 'feedback:theme', theme: rendered, ...rendered });
+}
 const publicProjectSchema = z.object({ name: z.string(), theme: themeSchema });
 const themeOverridesSchema = z
   .object({
@@ -50,10 +78,13 @@ const connectionStore = createConnectionStore(
 );
 function Toolbar() {
   const [expanded, setExpanded] = useState(false);
+  const [configured, setConfigured] = useState(false);
   const [mini, setMini] = useState(false);
+  const [showPins, setShowPins] = useState(false);
   const [connection, setAuth] = useState(connectionStore.read);
   const [sessionUser, setSessionUser] = useState<z.infer<typeof publicUserSchema> | null>(null);
   const [verified, setVerified] = useState(false);
+  const [verifiedUserId, setVerifiedUserId] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(connectRequested);
   const [cookieStatus, setCookieStatus] = useState<
     'checking' | 'available' | 'unavailable' | 'blocked'
@@ -69,19 +100,16 @@ function Toolbar() {
   );
   const [projectName, setProjectName] = useState('Feedback');
   const [theme, setTheme] = useState<Theme>(defaultTheme);
+  const [systemMode, setSystemMode] = useState<'light' | 'dark' | null>(null);
   const [overrides, setOverrides] = useState<z.infer<typeof themeOverridesSchema>>({});
   const [page, setPage] = useState('');
   const [screen, setScreen] = useState<'list' | 'selecting' | 'compose' | 'thread'>('list');
   const [context, setContext] = useState<z.infer<typeof contextSchema> | null>(null);
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const cachedThreads = useRef<Thread[]>([]);
-  useEffect(() => {
-    cachedThreads.current = threads;
-  }, [threads]);
-  const [activeDetail, setActiveDetail] = useState<Thread | null>(null);
+  const [threads, setThreads, cachedThreads] = useMutationState<Thread[]>([]);
+  const [activeDetail, setActiveDetail, cachedDetail] = useMutationState<Thread | null>(null);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
   const loadedPages = useRef(false);
-  const [jobs, setJobs] = useState<Work[]>([]);
+  const [jobs, setJobs, cachedJobs] = useMutationState<Work[]>([]);
   const [role, setRole] = useState('viewer');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -101,6 +129,13 @@ function Toolbar() {
   const resolvedTheme = useMemo(
     () => themeSchema.parse({ ...theme, ...overrides }),
     [theme, overrides],
+  );
+  const appliedTheme = useMemo(
+    () =>
+      resolvedTheme.mode === 'system' && systemMode
+        ? { ...resolvedTheme, mode: systemMode }
+        : resolvedTheme,
+    [resolvedTheme, systemMode],
   );
   const latestAuth = useRef(connection);
   const latestSession = useRef(sessionUser);
@@ -138,7 +173,6 @@ function Toolbar() {
       ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
       : null;
     if (latest) {
-      setActiveDetail(latest.thread);
       data.threads = data.threads.map((thread) =>
         thread.id === latest.thread.id ? latest.thread : thread,
       );
@@ -163,6 +197,7 @@ function Toolbar() {
       }),
     );
     if (current !== version.current) return;
+    if (latest) setActiveDetail(latest.thread);
     setThreads([...data.threads, ...retained.flat()]);
     if (!loadedPages.current) setNextBefore(data.nextBefore);
     setJobs(data.jobs);
@@ -172,11 +207,12 @@ function Toolbar() {
       .projects.find((item) => item.id === projectId);
     setRole(own?.role ?? 'viewer');
     setVerified(Boolean(own));
+    setVerifiedUserId(own ? (auth.user?.id ?? null) : null);
     if (own) {
       setTheme(own.theme);
       setConnecting(false);
     }
-  }, [auth, api, page, activeId]);
+  }, [auth, api, page, activeId, cachedThreads, setActiveDetail, setJobs, setThreads]);
   useEffect(() => {
     let cancelled = false;
     let checking = false;
@@ -217,12 +253,16 @@ function Toolbar() {
     };
   }, []);
   useEffect(() => {
-    send({ type: 'feedback:visibility', visible: Boolean(auth && verified) || connecting });
+    send({
+      type: 'feedback:visibility',
+      visible: configured && (Boolean(auth && verified) || connecting),
+    });
     if (!auth) {
+      setShowPins(false);
       setVerified(false);
       send({ type: 'feedback:clear' });
     }
-  }, [auth, verified, connecting]);
+  }, [auth, verified, connecting, configured]);
   useEffect(() => {
     document.documentElement.classList.add('toolbar-document');
     void request(
@@ -237,30 +277,27 @@ function Toolbar() {
       .catch((failure: unknown) => {
         setError(messageOf(failure));
         setExpanded(true);
+        // Parent configuration is also needed to show metadata errors in the correct system mode.
+        send({ type: 'feedback:ready' });
       });
   }, []);
-  useEffect(() => {
-    applyTheme(resolvedTheme);
-    send({
-      type: 'feedback:theme',
-      accent: resolvedTheme.accent,
-      placement: resolvedTheme.placement,
-    });
-  }, [resolvedTheme]);
+  useLayoutEffect(() => {
+    applyToolbarTheme(appliedTheme);
+  }, [appliedTheme]);
   useEffect(() => {
     const media = matchMedia('(prefers-color-scheme: dark)');
     const update = () => {
-      applyTheme(resolvedTheme);
+      applyToolbarTheme(appliedTheme);
     };
     media.addEventListener('change', update);
     return () => {
       media.removeEventListener('change', update);
     };
-  }, [resolvedTheme]);
+  }, [appliedTheme]);
   useEffect(() => {
     send({
       type: 'feedback:resize',
-      width: expanded ? 382 : mini ? 56 : 248,
+      width: expanded ? 382 : mini ? 56 : 280,
       height: expanded ? 636 : 56,
     });
   }, [expanded, mini]);
@@ -289,26 +326,54 @@ function Toolbar() {
       clearInterval(timer);
       counter.current++;
     };
-  }, [auth, refresh]);
+  }, [auth, refresh, setJobs, setThreads]);
   const receive = useEffectEvent((event: MessageEvent<unknown>) => {
+    if (!boundedMessage(event.data)) return;
     const result = z
       .object({
-        type: z.string(),
+        type: z.string().max(60),
         theme: themeOverridesSchema.optional(),
-        url: z.string().optional(),
+        url: z.string().max(1500).optional(),
+        threadId: z
+          .string()
+          .regex(/^[\w-]{1,120}$/)
+          .optional(),
+        systemMode: z.enum(['light', 'dark']).optional(),
         context: contextSchema.optional(),
         found: z.boolean().optional(),
       })
       .safeParse(event.data);
     if (!result.success) return;
     const data = result.data;
+    if (data.type === 'feedback:open-thread' && pinsAuthorized && showPins && data.url === page) {
+      const thread = threads.find(
+        (thread) =>
+          thread.id === data.threadId && thread.context.url === page && thread.status === 'open',
+      );
+      if (!thread) return;
+      setActiveDetail(null);
+      setActiveId(thread.id);
+      setScreen('thread');
+      setExpanded(true);
+      setDraft('');
+      setContext(null);
+      setError('');
+      send({ type: 'feedback:clear' });
+    }
+    if (
+      (data.type === 'feedback:configure' || data.type === 'feedback:system-theme') &&
+      data.systemMode
+    )
+      setSystemMode(data.systemMode);
     if (data.type === 'feedback:connect' && !auth) setConnecting(true);
     if (data.type === 'feedback:configure') {
+      setConfigured(true);
       version.current++;
       cachedThreads.current = [];
       setActiveDetail(null);
       setOverrides(data.theme ?? {});
       setPage(data.url ?? '');
+      setShowPins(false);
       loadedPages.current = false;
       setNextBefore(null);
       setThreads([]);
@@ -318,6 +383,7 @@ function Toolbar() {
       cachedThreads.current = [];
       setActiveDetail(null);
       setPage(data.url ?? '');
+      setShowPins(false);
       loadedPages.current = false;
       setNextBefore(null);
       setThreads([]);
@@ -466,20 +532,91 @@ function Toolbar() {
       back();
     }
   };
+  const pinsAuthorized = Boolean(auth?.user && verified && auth.user.id === verifiedUserId);
   const pageThreads = threads.filter(
     (thread) => thread.context.url === page && thread.status === 'open',
   );
-  const sendWork = async (thread: Thread) => {
-    await api(`/api/threads/${thread.id}/work`, {
-      method: 'POST',
-      body: { revision: thread.revision, idempotencyKey: crypto.randomUUID() },
+  useEffect(() => {
+    send({
+      type: 'feedback:pins',
+      url: page,
+      items:
+        pinsAuthorized && showPins
+          ? threads
+              .filter(
+                (thread) =>
+                  thread.context.url === page &&
+                  thread.status === 'open' &&
+                  thread.context.anchor.selector.length > 0,
+              )
+              .slice(0, maxPins)
+              .map((thread) => ({ threadId: thread.id, selector: thread.context.anchor.selector }))
+          : [],
     });
-    await refresh();
-    toast.success('Queued.');
+    if (!pinsAuthorized) setShowPins(false);
+  }, [pinsAuthorized, showPins, threads, page]);
+  const pinsToggle = (
+    <Button
+      variant={showPins ? 'secondary' : 'ghost'}
+      size="icon-sm"
+      aria-label={showPins ? 'Hide feedback pins' : 'Show feedback pins'}
+      role="switch"
+      aria-checked={showPins}
+      title={`Pins for up to ${maxPins} loaded feedback threads`}
+      disabled={!pinsAuthorized}
+      onClick={() => {
+        setShowPins((current) => !current);
+      }}
+    >
+      <MapPin className="size-4" />
+    </Button>
+  );
+  const mutationContext = JSON.stringify([page, auth?.user?.id]);
+  const currentContext = useRef(mutationContext);
+  const focusedThread = useRef(activeId);
+  useEffect(() => {
+    currentContext.current = mutationContext;
+    focusedThread.current = activeId;
+  }, [mutationContext, activeId]);
+  const workKeys = useRef(new Map<string, string>());
+  const acceptThread = (result: unknown, created = false) => {
+    if (currentContext.current !== mutationContext) return null;
+    const received = z.object({ thread: threadSchema }).parse(result).thread;
+    const thread = newestThread(received, [cachedDetail.current, ...cachedThreads.current]);
+    version.current++;
+    const exists = cachedThreads.current.some((item) => item.id === thread.id);
+    cachedThreads.current = exists
+      ? cachedThreads.current.map((item) => (item.id === thread.id ? thread : item))
+      : created
+        ? [thread, ...cachedThreads.current]
+        : cachedThreads.current;
+    setThreads(cachedThreads.current);
+    if (created || focusedThread.current === thread.id) setActiveDetail(thread);
+    setError('');
+    return thread;
+  };
+  const acceptJob = (result: unknown) => {
+    if (currentContext.current !== mutationContext) return null;
+    const received = z.object({ job: publicJobSchema }).parse(result).job;
+    const job = newestJob(received, cachedJobs.current);
+    version.current++;
+    setJobs((previous) =>
+      previous.some((item) => item.id === job.id)
+        ? previous.map((item) => (item.id === job.id ? job : item))
+        : [...previous, job],
+    );
+    setError('');
+    return job;
+  };
+  const sendWork = async (thread: Thread) => {
+    setError('');
+    const job = acceptJob(await requestWork(thread, workKeys.current, api));
+    if (job?.status === 'queued') toast.success('Queued.');
+    else if (job) toast.message(`Work ${job.status}.`);
   };
   return (
     <TooltipProvider>
-      <Toaster position="top-center" theme={resolvedTheme.mode === 'dark' ? 'dark' : 'light'} />
+      <Toaster position="top-center" theme={appliedTheme.mode} />
       {!expanded ? (
         <div className="m-1 flex h-12 items-center justify-between rounded-lg border bg-card px-2 shadow-sm">
           {mini ? (
@@ -509,6 +646,7 @@ function Toolbar() {
                 </Badge>
               </Button>
               <span className="h-4 border-l" />
+              {pinsToggle}
               <IconAction label="Select an element" onClick={select}>
                 <Target className="size-4" />
               </IconAction>
@@ -541,9 +679,12 @@ function Toolbar() {
                 </p>
               </div>
             </div>
-            <IconAction label="Minimize toolbar" onClick={collapse}>
-              <X className="size-4" />
-            </IconAction>
+            <div className="flex items-center gap-1">
+              {pinsToggle}
+              <IconAction label="Minimize toolbar" onClick={collapse}>
+                <X className="size-4" />
+              </IconAction>
+            </div>
           </header>
           {error ? (
             <p
@@ -592,17 +733,19 @@ function Toolbar() {
                 className="grid gap-3"
                 onSubmit={(event) => {
                   event.preventDefault();
+                  if (busy) return;
+                  setError('');
                   setBusy(true);
                   void api(`/api/projects/${projectId}/threads`, {
                     method: 'POST',
                     body: { context, body: draft },
                   })
-                    .then(async (result) => {
-                      const thread = z.object({ thread: threadSchema }).parse(result).thread;
+                    .then((result) => {
+                      const thread = acceptThread(result, true);
+                      if (!thread) return;
                       setActiveId(thread.id);
                       setScreen('thread');
                       setDraft('');
-                      await refresh();
                     })
                     .catch((failure: unknown) => {
                       setError(messageOf(failure));
@@ -632,8 +775,8 @@ function Toolbar() {
                     Visible to project members
                   </span>
                   <Button type="submit" disabled={busy || !draft.trim()} size="sm">
-                    {busy ? <Loader2 className="animate-spin" /> : null}Post feedback{' '}
-                    <ArrowUpRight />
+                    {busy ? <Loader2 className="animate-spin" /> : null}
+                    {busy ? 'Posting…' : 'Post feedback'} <ArrowUpRight />
                   </Button>
                 </div>
               </form>
@@ -645,24 +788,31 @@ function Toolbar() {
               thread={active}
               job={jobs.filter((job) => job.threadId === active.id).at(-1)}
               role={role}
+              actorId={auth.user?.id}
               onReply={async (body) => {
-                await api(`/api/threads/${active.id}/messages`, { method: 'POST', body: { body } });
-                await refresh();
+                acceptThread(
+                  await api(`/api/threads/${active.id}/messages`, {
+                    method: 'POST',
+                    body: { body },
+                  }),
+                );
               }}
               onReact={async (messageId, emoji) => {
-                await api(`/api/threads/${active.id}/reactions`, {
-                  method: 'POST',
-                  body: { messageId, emoji },
-                });
-                await refresh();
+                acceptThread(
+                  await api(`/api/threads/${active.id}/reactions`, {
+                    method: 'POST',
+                    body: { messageId, emoji },
+                  }),
+                );
               }}
               onSend={() => sendWork(active)}
               onResolve={async () => {
-                await api(`/api/threads/${active.id}`, {
-                  method: 'PATCH',
-                  body: { status: active.status === 'open' ? 'resolved' : 'open' },
-                });
-                await refresh();
+                acceptThread(
+                  await api(`/api/threads/${active.id}`, {
+                    method: 'PATCH',
+                    body: { status: active.status === 'open' ? 'resolved' : 'open' },
+                  }),
+                );
               }}
               onHighlight={() => {
                 send({ type: 'feedback:highlight', selector: active.context.anchor.selector });
@@ -670,8 +820,7 @@ function Toolbar() {
               onCancel={async () => {
                 const job = jobs.filter((job) => job.threadId === active.id).at(-1);
                 if (job) {
-                  await api(`/api/work/${job.id}/cancel`, { method: 'POST', body: {} });
-                  await refresh();
+                  acceptJob(await api(`/api/work/${job.id}/cancel`, { method: 'POST', body: {} }));
                 }
               }}
             />

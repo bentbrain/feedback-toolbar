@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Check, Copy, MessageCircle, Bot, Send, Target, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -24,6 +24,7 @@ import { initials, relativeTime } from '../ui.js';
 import type { Thread } from '../../shared/models.js';
 import { publicJobSchema } from '../../shared/models.js';
 import { z } from 'zod';
+import { MessageReactions } from './message-reactions.js';
 
 export type Work = z.infer<typeof publicJobSchema>;
 export function Brand({ small = false }: { small?: boolean }) {
@@ -253,7 +254,9 @@ export function Conversation({
   onHighlight,
   onCancel,
   compact = false,
+  actorId,
 }: {
+  actorId?: string | undefined;
   thread: Thread;
   job?: Work | undefined;
   role: string;
@@ -266,16 +269,25 @@ export function Conversation({
   compact?: boolean;
 }) {
   const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-  const work = async (action: () => Promise<void>) => {
-    if (busy) return;
-    setBusy(true);
+  const [pending, setPending] = useState('');
+  const locked = useRef(false);
+  const actionError = useRef<string | number | null>(null);
+  const busy = Boolean(pending);
+  const work = async (label: string, action: () => Promise<void>) => {
+    if (locked.current) return;
+    locked.current = true;
+    if (actionError.current !== null) toast.dismiss(actionError.current);
+    actionError.current = null;
+    setPending(label);
     try {
       await action();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not complete this action.');
+      actionError.current = toast.error(
+        error instanceof Error ? error.message : 'Could not complete this action.',
+      );
     } finally {
-      setBusy(false);
+      locked.current = false;
+      setPending('');
     }
   };
   return (
@@ -333,27 +345,12 @@ export function Conversation({
               >
                 {message.body}
               </p>
-              <div className="mt-2 flex gap-1">
-                {['👍', '❤️', '👀', '🎉'].map((emoji) => {
-                  const reactions = message.reactions.filter(
-                    (reaction) => reaction.emoji === emoji,
-                  );
-                  return (
-                    <Button
-                      key={emoji}
-                      variant="outline"
-                      size="xs"
-                      className="h-6 px-1.5 text-[10px]"
-                      aria-label={`React with ${emoji}`}
-                      disabled={busy || role === 'viewer'}
-                      onClick={() => void work(() => onReact(message.id, emoji))}
-                    >
-                      {emoji}
-                      {reactions.length || ''}
-                    </Button>
-                  );
-                })}
-              </div>
+              <MessageReactions
+                message={message}
+                actorId={actorId}
+                disabled={busy || role === 'viewer'}
+                onReact={(emoji) => work('react', () => onReact(message.id, emoji))}
+              />
             </div>
           </div>
         ))}
@@ -389,7 +386,7 @@ export function Conversation({
           onSubmit={(event) => {
             event.preventDefault();
             if (draft.trim())
-              void work(async () => {
+              void work('reply', async () => {
                 await onReply(draft);
                 setDraft('');
               });
@@ -417,9 +414,14 @@ export function Conversation({
                   variant="outline"
                   size="xs"
                   disabled={busy || (!!job && ['queued', 'running'].includes(job.status))}
-                  onClick={() => void work(onSend)}
+                  onClick={() => void work('send', onSend)}
                 >
-                  <Bot className="size-3" /> Send to agent
+                  {pending === 'send' ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Bot className="size-3" />
+                  )}
+                  {pending === 'send' ? 'Sending to agent…' : 'Send to agent'}
                 </Button>
               ) : null}
               <Button
@@ -427,10 +429,14 @@ export function Conversation({
                 variant="ghost"
                 size="xs"
                 disabled={busy}
-                onClick={() => void work(onResolve)}
+                onClick={() => void work('resolve', onResolve)}
               >
                 <Check className="size-3" />
-                {thread.status === 'open' ? 'Resolve' : 'Reopen'}
+                {pending === 'resolve'
+                  ? 'Saving…'
+                  : thread.status === 'open'
+                    ? 'Resolve'
+                    : 'Reopen'}
               </Button>
               {role === 'owner' && onCancel && job && ['queued', 'running'].includes(job.status) ? (
                 <Button
@@ -438,15 +444,19 @@ export function Conversation({
                   variant="ghost"
                   size="xs"
                   disabled={busy}
-                  onClick={() => void work(onCancel)}
+                  onClick={() => void work('cancel', onCancel)}
                 >
-                  Cancel work
+                  {pending === 'cancel' ? 'Cancelling…' : 'Cancel work'}
                 </Button>
               ) : null}
             </div>
             <Button size="sm" type="submit" disabled={busy || !draft.trim()}>
-              {busy ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
-              Reply
+              {pending === 'reply' ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Send className="size-3" />
+              )}
+              {pending === 'reply' ? 'Replying…' : 'Reply'}
             </Button>
           </div>
         </form>

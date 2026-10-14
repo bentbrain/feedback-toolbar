@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { projectInputSchema, themeSchema } from '../shared/models.js';
+import { emojiSchema, projectInputSchema, themeSchema } from '../shared/models.js';
 import { client } from './client.js';
 
 export async function startMcp(
@@ -132,7 +132,7 @@ export async function startMcp(
       inputSchema: {
         threadId: z.string(),
         messageId: z.string(),
-        emoji: z.enum(['👍', '❤️', '👀', '🎉', '🚀']),
+        emoji: emojiSchema,
       },
     },
     ({ threadId, ...input }) =>

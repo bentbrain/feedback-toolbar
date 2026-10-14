@@ -96,7 +96,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   );
   frame.referrerPolicy = 'no-referrer';
   frame.style.cssText =
-    'display:block;position:relative;z-index:2;width:100%;height:100%;border:0;background:transparent;color-scheme:normal;';
+    'display:block;position:relative;z-index:2;width:100%;height:100%;border:0;background:transparent;color-scheme:light dark;';
   const frameUrl = new URL('/toolbar', service);
   frameUrl.searchParams.set('project', options.projectId);
   frameUrl.searchParams.set('origin', location.origin);
@@ -129,6 +129,9 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     pinsPage = '';
     pins.update([]);
   };
+  const media = matchMedia('(prefers-color-scheme: dark)');
+  const systemMode = () => (media.matches ? 'dark' : 'light');
+  const onSystemTheme = () => send({ type: 'feedback:system-theme', systemMode: systemMode() });
   const resize = (width: number, height: number) => {
     host.style.setProperty('width', `${Math.min(width, innerWidth - 24)}px`, 'important');
     host.style.setProperty('height', `${Math.min(height, innerHeight - 36)}px`, 'important');
@@ -230,6 +233,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     if (data.type === 'feedback:ready')
       send({
         type: 'feedback:configure',
+        systemMode: systemMode(),
         projectId: options.projectId,
         theme: options.theme ?? {},
         url: pageUrl(),
@@ -317,6 +321,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
       updateViewport();
     }
   }, 800);
+  media.addEventListener('change', onSystemTheme);
   window.addEventListener('message', onMessage);
   document.addEventListener('pointermove', onMove, true);
   document.addEventListener('click', onClick, true);
@@ -329,6 +334,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
       pins.destroy();
       stopSelection();
       host.remove();
+      media.removeEventListener('change', onSystemTheme);
       window.removeEventListener('message', onMessage);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('click', onClick, true);

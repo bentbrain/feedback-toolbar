@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import { CSPProvider } from '@base-ui/react/csp-provider';
 import {
@@ -47,13 +55,12 @@ const send = (data: unknown) => {
 };
 function applyToolbarTheme(theme: Theme) {
   applyTheme(theme);
-  send({
-    type: 'feedback:theme',
+  const rendered = {
+    ...theme,
+    mode: document.documentElement.dataset.mode === 'dark' ? 'dark' : 'light',
     accent: document.documentElement.style.getPropertyValue('--primary').trim(),
-    placement: theme.placement,
-    mode: document.documentElement.dataset.mode,
-    radius: theme.radius,
-  });
+  };
+  send({ type: 'feedback:theme', theme: rendered, ...rendered });
 }
 const publicProjectSchema = z.object({ name: z.string(), theme: themeSchema });
 const themeOverridesSchema = z
@@ -71,6 +78,7 @@ const connectionStore = createConnectionStore(
 );
 function Toolbar() {
   const [expanded, setExpanded] = useState(false);
+  const [configured, setConfigured] = useState(false);
   const [mini, setMini] = useState(false);
   const [showPins, setShowPins] = useState(false);
   const [connection, setAuth] = useState(connectionStore.read);
@@ -92,6 +100,7 @@ function Toolbar() {
   );
   const [projectName, setProjectName] = useState('Feedback');
   const [theme, setTheme] = useState<Theme>(defaultTheme);
+  const [systemMode, setSystemMode] = useState<'light' | 'dark' | null>(null);
   const [overrides, setOverrides] = useState<z.infer<typeof themeOverridesSchema>>({});
   const [page, setPage] = useState('');
   const [screen, setScreen] = useState<'list' | 'selecting' | 'compose' | 'thread'>('list');
@@ -120,6 +129,13 @@ function Toolbar() {
   const resolvedTheme = useMemo(
     () => themeSchema.parse({ ...theme, ...overrides }),
     [theme, overrides],
+  );
+  const appliedTheme = useMemo(
+    () =>
+      resolvedTheme.mode === 'system' && systemMode
+        ? { ...resolvedTheme, mode: systemMode }
+        : resolvedTheme,
+    [resolvedTheme, systemMode],
   );
   const latestAuth = useRef(connection);
   const latestSession = useRef(sessionUser);
@@ -237,13 +253,16 @@ function Toolbar() {
     };
   }, []);
   useEffect(() => {
-    send({ type: 'feedback:visibility', visible: Boolean(auth && verified) || connecting });
+    send({
+      type: 'feedback:visibility',
+      visible: configured && (Boolean(auth && verified) || connecting),
+    });
     if (!auth) {
       setShowPins(false);
       setVerified(false);
       send({ type: 'feedback:clear' });
     }
-  }, [auth, verified, connecting]);
+  }, [auth, verified, connecting, configured]);
   useEffect(() => {
     document.documentElement.classList.add('toolbar-document');
     void request(
@@ -258,21 +277,23 @@ function Toolbar() {
       .catch((failure: unknown) => {
         setError(messageOf(failure));
         setExpanded(true);
+        // Parent configuration is also needed to show metadata errors in the correct system mode.
+        send({ type: 'feedback:ready' });
       });
   }, []);
-  useEffect(() => {
-    applyToolbarTheme(resolvedTheme);
-  }, [resolvedTheme]);
+  useLayoutEffect(() => {
+    applyToolbarTheme(appliedTheme);
+  }, [appliedTheme]);
   useEffect(() => {
     const media = matchMedia('(prefers-color-scheme: dark)');
     const update = () => {
-      applyToolbarTheme(resolvedTheme);
+      applyToolbarTheme(appliedTheme);
     };
     media.addEventListener('change', update);
     return () => {
       media.removeEventListener('change', update);
     };
-  }, [resolvedTheme]);
+  }, [appliedTheme]);
   useEffect(() => {
     send({
       type: 'feedback:resize',
@@ -317,6 +338,7 @@ function Toolbar() {
           .string()
           .regex(/^[\w-]{1,120}$/)
           .optional(),
+        systemMode: z.enum(['light', 'dark']).optional(),
         context: contextSchema.optional(),
         found: z.boolean().optional(),
       })
@@ -338,8 +360,14 @@ function Toolbar() {
       setError('');
       send({ type: 'feedback:clear' });
     }
+    if (
+      (data.type === 'feedback:configure' || data.type === 'feedback:system-theme') &&
+      data.systemMode
+    )
+      setSystemMode(data.systemMode);
     if (data.type === 'feedback:connect' && !auth) setConnecting(true);
     if (data.type === 'feedback:configure') {
+      setConfigured(true);
       version.current++;
       cachedThreads.current = [];
       setActiveDetail(null);
@@ -588,7 +616,7 @@ function Toolbar() {
   };
   return (
     <TooltipProvider>
-      <Toaster position="top-center" theme={resolvedTheme.mode === 'dark' ? 'dark' : 'light'} />
+      <Toaster position="top-center" theme={appliedTheme.mode} />
       {!expanded ? (
         <div className="m-1 flex h-12 items-center justify-between rounded-lg border bg-card px-2 shadow-sm">
           {mini ? (

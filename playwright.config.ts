@@ -7,5 +7,17 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: { baseURL: 'http://localhost:44320', trace: 'off', screenshot: 'only-on-failure' },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', testIgnore: 'theme.spec.ts', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium-native-dark',
+      testMatch: 'theme.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: 'chromium',
+        colorScheme: null,
+        launchOptions: { args: ['--force-dark-mode'] },
+      },
+    },
+  ],
 });

@@ -17,5 +17,13 @@
     "rootDir": ".",
     "allowJs": true
   },
-  "include": ["src", "scripts", "tests", "e2e", "playwright.config.ts", "eslint.config.js"]
+  "include": [
+    "src",
+    "scripts",
+    "tests",
+    "e2e",
+    "playwright.config.ts",
+    "playwright.theme.config.ts",
+    "eslint.config.js"
+  ]
 }

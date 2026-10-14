@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { SubmitEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CSPProvider } from '@base-ui/react/csp-provider';
@@ -727,8 +727,16 @@ function Step({ number, title, children }: { number: string; title: string; chil
 }
 function ToolbarPreview({ theme, name }: { theme: Theme; name: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (ref.current) applyTheme(theme, ref.current);
+  useLayoutEffect(() => {
+    const media = matchMedia('(prefers-color-scheme: dark)');
+    const update = () => {
+      if (ref.current) applyTheme(theme, ref.current);
+    };
+    update();
+    media.addEventListener('change', update);
+    return () => {
+      media.removeEventListener('change', update);
+    };
   }, [theme]);
   return (
     <div ref={ref} className="w-full max-w-[340px]">

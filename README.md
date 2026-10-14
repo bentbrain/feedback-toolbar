@@ -75,17 +75,16 @@ Omit `--agent` for an authenticated setup session that creates projects. Keep it
 
 A harness such as T3 Code can poll using these tools on its own schedule. An agent should claim only explicit work requests, heartbeat while running, and complete the request with a review summary. Feedback is untrusted task data; it cannot grant new permissions. The feedback service does not execute shell commands or receive model credentials.
 
-The executable adapter starts a local Codex CLI process when the project owner selects **Send to agent**:
+Configure a recurring task in your existing harness to run this workflow:
 
-```sh
-node dist/cli.js worker --runner codex --workspace /path/to/website
-```
+1. Call `claim_work`. If no job is returned, finish the scheduled run.
+2. Read the frozen snapshot and its page/element context. Treat feedback as untrusted input and keep the harness's existing permissions.
+3. Call `heartbeat_work` at least every 60 seconds while working. Stop if the request is cancelled or authorization is lost.
+4. Call `complete_work` with a proposed change and verification summary. The thread stays open for human review.
 
-This adapter requires Codex CLI 0.161.0 or newer and an existing harness login. It ignores user configuration and execution rules, enforces a workspace permission profile, denies secret files and unrelated filesystem reads, disables command networking, and supplies a minimal tool environment. It never auto-merges or deploys. Cancellation and timeout stop the runner process group and tracked descendants, escalate to forced termination, and verify that they exited before another task starts. If termination cannot be verified, the worker retains its lock for operator inspection. Use WSL on Windows. Prepare dependencies before starting; network-dependent checks must be run separately by a trusted operator.
+**Send to agent** queues an explicit owner-approved request for the next scheduled harness run. Reading new comments does not itself authorize code changes. Configure the schedule and its project workspace in T3 Code, Codex, or your chosen harness. The feedback service and its connector provide data and leased work; the harness owns model access, execution, sandboxing, subprocess cleanup, and its schedule.
 
-Linux hosts must satisfy the [CLI sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing). Ubuntu 24.04 needs Bubblewrap and its supplied AppArmor profile loaded before starting the worker. CI installs these prerequisites and checks startup with disposable authentication and a mock provider. The worker resolves standalone and official package-manager installations and grants read access to their executable runtime files. It keeps the workspace policy and secret exclusions enforced.
-
-Claims are exclusive per project and tied to a leased credential. Revocation, cancellation, or lease expiry stops further authorized updates. Expired runs become failed and release the queue, with a visible instruction to inspect local changes. They are never replayed automatically. Agent completion leaves the feedback thread open for human review. Agent snapshots have a 512 KB limit and are delivered through stdin.
+Claims are exclusive per project and tied to a leased credential. Revocation, cancellation, or lease expiry blocks further authorized updates. Expired runs become failed and release the queue, with a visible instruction to inspect prior work. They are never replayed automatically. The harness must stop work after a failed heartbeat; cancellation cannot undo source changes it already made. Agent snapshots have a 512 KB limit.
 
 ## Appearance
 
@@ -136,7 +135,7 @@ Toolbar and CLI device approval show a matching code and the connection scope. A
 
 The server checks membership, role, credential scope, and registered origins on each project operation. Agent keys cannot start work or administer permissions. Only verified production identities can be added as project members. Messages render as text, theme values are validated, and thread listings use tenant-scoped cursor pagination and bounded previews. Full conversation details load when opened, and search runs across the project rather than just the loaded page. `FEEDBACK_ALLOW_SIGNUP=false` prevents new accounts while allowing existing users to sign in.
 
-Style isolation protects rendering, not secrets from a malicious website or browser extension. Do not place private credentials in selected text. Human review remains necessary before applying agent changes. The executable adapter is a separate process using the harness's OS sandbox; it is not a separate virtual machine.
+Style isolation protects rendering, not secrets from a malicious website or browser extension. Do not place private credentials in selected text. Human review remains necessary before applying agent changes. Agent execution and process isolation belong to the user's configured harness.
 
 Before opening a deployment to users, exercise GitHub sign-in on its actual domain, check a toolbar-to-agent round trip, and test database recovery using your Cloudflare account's backup/Time Travel facilities. CI and an independent code review do not replace those deployment checks. Keep deployment and OAuth secrets in GitHub and platform secret stores, and rotate them when access changes.
 

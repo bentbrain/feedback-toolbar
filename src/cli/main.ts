@@ -7,7 +7,6 @@ import { z } from 'zod';
 import { installation, originSchema, projectSchema, themeSchema } from '../shared/models.js';
 import { bindingKey, client, publicConfig, saveCredential, storedCredentials } from './client.js';
 import { installHtml } from './install.js';
-import { runWorker } from './worker.js';
 import { replaceFile } from '../shared/files.js';
 import { deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
 
@@ -22,9 +21,6 @@ const parsed = parseArgs({
     workspace: { type: 'string' },
     json: { type: 'boolean' },
     help: { type: 'boolean' },
-    once: { type: 'boolean' },
-    interval: { type: 'string' },
-    runner: { type: 'string' },
     accent: { type: 'string' },
     mode: { type: 'string' },
     placement: { type: 'string' },
@@ -183,7 +179,7 @@ async function init() {
 async function run() {
   if (options.help || command === 'help') {
     console.log(
-      `feedback-toolbar\n\n  login --server URL                       Authorize local CLI / MCP access\n  init --name NAME --origin URL --json      Create a project and link this workspace\n  init --project ID --file index.html       Install into an existing HTML project\n  theme --accent '#72865d' --mode dark       Update the linked toolbar's theme\n  doctor                                   Check service, project, and local binding\n  threads                                  Read project feedback as JSON\n  claim                                    Claim one explicitly requested task\n  worker --runner codex [--once]            Run approved feedback tasks in Codex\n  mcp [--agent]                            Serve MCP tools over stdio\n\nOptions: --server, --project, --workspace, --json, --no-agent, --no-open\nSecrets stay in your user configuration directory. Project config contains public values only.`,
+      `feedback-toolbar\n\n  login --server URL                       Authorize local CLI / MCP access\n  init --name NAME --origin URL --json      Create a project and link this workspace\n  init --project ID --file index.html       Install into an existing HTML project\n  theme --accent '#72865d' --mode dark       Update the linked toolbar's theme\n  doctor                                   Check service, project, and local binding\n  threads                                  Read project feedback as JSON\n  claim                                    Claim one explicitly requested task\n  mcp [--agent]                            Serve MCP tools over stdio\n\nOptions: --server, --project, --workspace, --json, --no-agent, --no-open\nSecrets stay in your user configuration directory. Project config contains public values only.`,
     );
     return;
   }
@@ -198,15 +194,6 @@ async function run() {
       agent: options.agent,
     });
   }
-  if (command === 'worker')
-    return runWorker({
-      server: options.server,
-      projectId: options.project,
-      workspace: options.workspace,
-      once: options.once ?? false,
-      interval: Number(options.interval ?? 5000),
-      runner: options.runner ?? '',
-    });
   const connection = await client({
     server: options.server,
     projectId: options.project,

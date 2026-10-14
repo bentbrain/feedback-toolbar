@@ -1105,7 +1105,7 @@ function Agents({
         <div className="grid gap-6">
           <Section
             title="Connect your local agent"
-            description="Codex workers or your existing MCP-capable harness."
+            description="Scheduled feedback checks in the harness you already use."
           >
             <div className="grid gap-7">
               <Step number="1" title="Sign in from your terminal">
@@ -1115,10 +1115,11 @@ function Agents({
                 <Code>{`feedback-toolbar init --server ${location.origin} --project ${project.id} --json`}</Code>
                 <p>Run this from the repository your agent should work in.</p>
               </Step>
-              <Step number="3" title="Choose how your agent receives work">
-                <Code>{`# Explicitly enable a Codex worker\nfeedback-toolbar worker --runner codex\n\n# Existing harness: scheduled checks through MCP\nfeedback-toolbar mcp`}</Code>
+              <Step number="3" title="Schedule feedback checks in your harness">
+                <Code>{`# Connect your existing agent harness\nfeedback-toolbar mcp --agent\n\n# In the harness schedule:\n# claim_work → heartbeat_work → complete_work`}</Code>
                 <p>
-                  Requests wait while your connector is offline. Results return to the same thread.
+                  Send to agent queues a request for the next scheduled check. Results return to the
+                  same thread.
                 </p>
               </Step>
             </div>

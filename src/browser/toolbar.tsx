@@ -32,7 +32,15 @@ const send = (data: unknown) => {
   parent.postMessage(data, parentOrigin);
 };
 const publicProjectSchema = z.object({ name: z.string(), theme: themeSchema });
-const themeOverridesSchema = themeSchema.partial();
+const themeOverridesSchema = z
+  .object({
+    mode: themeSchema.shape.mode.unwrap().optional(),
+    accent: themeSchema.shape.accent.unwrap().optional(),
+    radius: themeSchema.shape.radius.unwrap().optional(),
+    density: themeSchema.shape.density.unwrap().optional(),
+    placement: themeSchema.shape.placement.unwrap().optional(),
+  })
+  .strict();
 const connectionStore = createConnectionStore(
   `feedback-embed:${projectId}:${parentOrigin}`,
   location.origin,

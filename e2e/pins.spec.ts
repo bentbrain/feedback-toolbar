@@ -436,6 +436,11 @@ test('an unresolvable selection stays in selection mode and can recover on a con
   await expect(frame.getByRole('alert')).toHaveText(
     'This element cannot be identified reliably. Select a containing element.',
   );
+  await page.keyboard.press('Escape');
+  await expect(frame.getByRole('alert')).toBeHidden();
+  await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+  await page.locator('main section:first-of-type button').click();
+  await expect(frame.getByRole('alert')).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Cancel selection', exact: true })).toBeVisible();
   await page.locator('main').click({ position: { x: 2, y: 2 } });
   await expect(frame.getByLabel('What would you like to change?')).toBeVisible();

@@ -410,7 +410,10 @@ function Toolbar() {
       setDraft('');
       setError('');
     }
-    if (data.type === 'feedback:selection-cancelled') setScreen('list');
+    if (data.type === 'feedback:selection-cancelled') {
+      setScreen('list');
+      setError('');
+    }
     if (data.type === 'feedback:selection-unavailable' && screen === 'selecting')
       setError('This element cannot be identified reliably. Select a containing element.');
     if (data.type === 'feedback:anchor-status' && data.found === false)

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { setCookie, deleteCookie } from 'hono/cookie';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import {
   credentialSchema,
@@ -184,6 +185,10 @@ export function createApp(options: Options) {
     console.error('Request failed:', error.message);
     return c.json({ error: 'The service could not complete this request.' }, 500);
   });
+  app.use(
+    '*',
+    bodyLimit({ maxSize: 32_768, onError: (c) => c.json({ error: 'Request is too large.' }, 413) }),
+  );
   app.use('*', async (c, next) => {
     if (new URL(c.req.url).origin !== url)
       throw new HttpError(403, 'Use the configured service URL.');

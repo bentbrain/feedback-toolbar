@@ -50,10 +50,10 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   });
   expect(account.status()).toBe(201);
   const created = await page.request.post('/api/projects', {
-    data: { name: 'Toolbar test', origins: ['http://localhost:4321'] },
+    data: { name: 'Toolbar test', origins: ['http://localhost:44321'] },
   });
   const project = z.object({ project: projectSchema }).parse(await created.json()).project;
-  await page.goto(`http://localhost:4321/?project=${project.id}`);
+  await page.goto(`http://localhost:44321/?project=${project.id}`);
   await expect
     .poll(() => page.frames().some((frame) => frame.url().includes('/toolbar?')))
     .toBe(true);

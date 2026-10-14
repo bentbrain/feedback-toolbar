@@ -385,7 +385,7 @@ void test('work is idempotent, revision-bound, and claimed once across competing
   assert.equal(result.thread.messages.at(-1)?.kind, 'agent');
   assert.equal(result.thread.messages.length, 2);
 });
-void test('cancellation, expiry, and revocation fence off stale runners', async (t) => {
+void test('cancellation and revocation fence off stale runners', async (t) => {
   const f = fixture();
   t.after(() => {
     f.store.close();
@@ -442,6 +442,18 @@ void test('cancellation, expiry, and revocation fence off stale runners', async 
   const job = await f.store.get('jobs', requested.id, jobSchema);
   assert.ok(job);
   assert.equal(job.status, 'cancelled');
+});
+void test('oversized streaming bodies stop before authorization or JSON parsing', async (t) => {
+  const f = fixture();
+  t.after(() => {
+    f.store.close();
+  });
+  const response = await f.call('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Large request', padding: 'x'.repeat(40_000) },
+  });
+  assert.equal(response.status, 413);
+  assert.equal((await f.store.list('users', z.object({ id: z.string() }))).length, 0);
 });
 void test('project setup is idempotent and themes reject executable values', async (t) => {
   const f = fixture();

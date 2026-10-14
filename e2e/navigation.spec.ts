@@ -115,3 +115,132 @@ test('feedback keeps previous results during a slow filter fetch and reuses cach
   await expect(page.getByText('open conversation', { exact: true })).toBeVisible({ timeout: 1000 });
   await expect(page.getByText('resolved conversation', { exact: true })).toBeHidden();
 });
+
+test('thread detail keeps the newest work when an older run is absent from the list', async ({
+  page,
+}) => {
+  await page.route('**/api/projects/*/threads?**', async (route) => {
+    const response = await route.fetch();
+    const data = z.looseObject({ threads: z.array(threadSchema) }).parse(await response.json());
+    const thread = data.threads.find((item) => item.messages[0]?.body === 'open conversation');
+    if (!thread) throw new Error('Missing open thread.');
+    const job = {
+      id: 'new-run',
+      projectId: thread.projectId,
+      threadId: thread.id,
+      requestedBy: 'owner',
+      revision: thread.revision,
+      status: 'running',
+      createdAt: '2026-10-15T02:00:00.000Z',
+      updatedAt: '2026-10-15T02:00:00.000Z',
+      claimedBy: 'Agent',
+      leaseExpiresAt: null,
+      runId: null,
+      result: null,
+    };
+    await route.fulfill({ response, json: { ...data, jobs: [job] } });
+  });
+  await page.route('**/api/threads/*', async (route) => {
+    const response = await route.fetch();
+    const data = z.object({ thread: threadSchema }).parse(await response.json());
+    const job = {
+      projectId: data.thread.projectId,
+      threadId: data.thread.id,
+      requestedBy: 'owner',
+      revision: data.thread.revision,
+      claimedBy: 'Agent',
+      leaseExpiresAt: null,
+      runId: null,
+      result: null,
+    };
+    await route.fulfill({
+      response,
+      json: {
+        ...data,
+        jobs: [
+          {
+            ...job,
+            id: 'old-run',
+            status: 'review',
+            createdAt: '2026-10-15T01:00:00.000Z',
+            updatedAt: '2026-10-15T01:00:00.000Z',
+          },
+          {
+            ...job,
+            id: 'new-run',
+            status: 'running',
+            createdAt: '2026-10-15T02:00:00.000Z',
+            updatedAt: '2026-10-15T02:00:00.000Z',
+          },
+        ],
+      },
+    });
+  });
+  await page.reload();
+  await page.getByText('open conversation', { exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button', { name: 'Cancel work', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Send to agent', exact: true })).toBeDisabled();
+  await expect(dialog.getByText('Ready for review', { exact: true })).toBeHidden();
+});
+
+test('a newer list summary cannot replace full detail after a delayed reply', async ({ page }) => {
+  const loaded = page.waitForResponse((response) => /\/api\/threads\/[^/]+$/.test(response.url()));
+  await page.getByText('open conversation', { exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const detailResponse = await loaded;
+  const { thread } = z.object({ thread: threadSchema }).parse(await detailResponse.json());
+  await page.request.post(`/api/threads/${thread.id}/messages`, {
+    data: { body: 'Existing reply' },
+  });
+  await page.reload();
+  await page.getByText('open conversation', { exact: true }).click();
+  await expect(dialog.getByText('Existing reply', { exact: true })).toBeVisible();
+  let saved = () => {
+    /* Assigned synchronously below. */
+  };
+  let releaseReply = () => {
+    /* Assigned synchronously below. */
+  };
+  let releaseDetail = () => {
+    /* Assigned synchronously below. */
+  };
+  const savedReply = new Promise<void>((resolve) => {
+    saved = resolve;
+  });
+  const replyGate = new Promise<void>((resolve) => {
+    releaseReply = resolve;
+  });
+  const detailGate = new Promise<void>((resolve) => {
+    releaseDetail = resolve;
+  });
+  await page.route(`**/api/threads/${thread.id}/messages`, async (route) => {
+    const response = await route.fetch();
+    saved();
+    await replyGate;
+    await route.fulfill({ response });
+  });
+  try {
+    await dialog.getByRole('textbox', { name: 'Reply', exact: true }).fill('Delayed reply');
+    await dialog.getByRole('button', { name: 'Reply', exact: true }).click();
+    await savedReply;
+    await page.request.post(`/api/threads/${thread.id}/messages`, {
+      data: { body: 'Newest reply' },
+    });
+    await page.route(`**/api/threads/${thread.id}`, async (route) => {
+      await detailGate;
+      await route.continue();
+    });
+    const list = page.waitForResponse((response) => response.url().includes('/threads?'));
+    await list;
+    releaseReply();
+    await expect(dialog.getByRole('textbox', { name: 'Reply', exact: true })).toHaveValue('');
+    await expect(dialog.getByText('Existing reply', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('Delayed reply', { exact: true })).toBeVisible();
+    releaseDetail();
+    await expect(dialog.getByText('Newest reply', { exact: true })).toBeVisible();
+  } finally {
+    releaseReply();
+    releaseDetail();
+  }
+});

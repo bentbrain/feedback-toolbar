@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { InfiniteData } from '@tanstack/react-query';
 import { z } from 'zod';
@@ -22,7 +23,7 @@ function mergeJobs(jobs: Job[]): Job[] {
     const previous = merged.get(job.id);
     merged.set(job.id, newestJob(job, previous ? [previous] : []));
   }
-  return [...merged.values()];
+  return [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export function useFeedback(
@@ -73,10 +74,20 @@ export function useFeedback(
     refetchInterval: 10_000,
   });
   const threads = feedback.data?.pages.flatMap((page) => page.threads) ?? [];
-  // The API includes project jobs with every page.
+  const summaryRevision = threads.find((thread) => thread.id === activeId)?.revision;
+  const detailRevision = detail.data?.thread.revision;
+  useEffect(() => {
+    if (
+      summaryRevision !== undefined &&
+      detailRevision !== undefined &&
+      summaryRevision > detailRevision
+    )
+      void client.invalidateQueries({ queryKey: ['thread', projectId, activeId] });
+  }, [client, projectId, activeId, summaryRevision, detailRevision]);
+  // Detail supplies the authoritative order for runs with identical timestamps.
   const jobs = mergeJobs([
-    ...(feedback.data?.pages.flatMap((page) => page.jobs) ?? []),
     ...(detail.data?.jobs ?? []),
+    ...(feedback.data?.pages.flatMap((page) => page.jobs) ?? []),
   ]);
   const acceptThread = async (result: unknown) => {
     const received = z.object({ thread: threadSchema }).parse(result).thread;
@@ -90,7 +101,8 @@ export function useFeedback(
     const known = client
       .getQueriesData<FeedbackData>({ queryKey: ['feedback', projectId] })
       .flatMap(([, data]) => data?.pages.flatMap((page) => page.threads) ?? []);
-    const thread = newestThread(received, [previous?.thread ?? null, ...known]);
+    // List entries are summaries, so they must never enter the full-detail cache.
+    const thread = newestThread(received, [previous?.thread ?? null]);
     client.setQueryData<Detail>(key, { thread, jobs: previous?.jobs ?? [] });
     client.setQueriesData<FeedbackData>(
       { queryKey: ['feedback', projectId] },
@@ -99,10 +111,14 @@ export function useFeedback(
           ...data,
           pages: data.pages.map((page) => ({
             ...page,
-            threads: page.threads.map((item) => (item.id === thread.id ? thread : item)),
+            threads: page.threads.map((item) =>
+              item.id === thread.id ? newestThread(thread, [item]) : item,
+            ),
           })),
         },
     );
+    if (known.some((item) => item.id === thread.id && item.revision > thread.revision))
+      void client.invalidateQueries({ queryKey: key });
     void client.invalidateQueries({ queryKey: ['feedback', projectId] });
   };
   const acceptJob = async (result: unknown) => {
@@ -117,7 +133,7 @@ export function useFeedback(
       .getQueriesData<FeedbackData>({ queryKey: ['feedback', projectId] })
       .flatMap(([, data]) => data?.pages.flatMap((page) => page.jobs) ?? []);
     const job = newestJob(received, mergeJobs([...known, ...(previous?.jobs ?? [])]));
-    const update = (jobs: Job[]) => [...jobs.filter((item) => item.id !== job.id), job];
+    const update = (jobs: Job[]) => mergeJobs([...jobs, job]);
     client.setQueryData<Detail>(key, (data) => data && { ...data, jobs: update(data.jobs) });
     client.setQueriesData<FeedbackData>(
       { queryKey: ['feedback', projectId] },

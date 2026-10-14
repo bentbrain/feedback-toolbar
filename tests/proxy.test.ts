@@ -52,6 +52,7 @@ void test('the Vercel function replaces forged visitor headers and preserves red
     requests++;
     assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
     assert.equal(c.req.header('Origin'), 'https://feedback.example');
+    assert.equal(c.req.header('Idempotency-Key'), 'setup-fixture');
     c.header('Set-Cookie', 'fixture_session=fixture; HttpOnly; SameSite=Lax');
     return c.redirect('https://github.com/login', 302);
   });
@@ -78,6 +79,7 @@ void test('the Vercel function replaces forged visitor headers and preserves red
     'x-vercel-forwarded-for': '203.0.113.44',
     'x-feedback-client-ip': '203.0.113.99',
     Origin: 'https://feedback.example',
+    'Idempotency-Key': 'setup-fixture',
   };
   const response = await fetch(`${origin}/api/auth/callback/github?code=fixture&state=fixture`, {
     headers,

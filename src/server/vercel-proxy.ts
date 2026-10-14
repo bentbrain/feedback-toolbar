@@ -13,6 +13,7 @@ async function proxy(request: Request): Promise<Response> {
       'authorization',
       'cookie',
       'content-type',
+      'idempotency-key',
       'origin',
       'sec-fetch-site',
       'sec-fetch-mode',

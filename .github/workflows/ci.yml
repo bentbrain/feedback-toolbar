@@ -171,6 +171,8 @@ jobs:
     name: Deploy production
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: gate
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -206,10 +208,15 @@ jobs:
           test -n "$AUTH_GITHUB_CLIENT_ID" || { echo 'Set AUTH_GITHUB_CLIENT_ID'; exit 1; }
           test -n "$AUTH_GITHUB_CLIENT_SECRET" || { echo 'Set AUTH_GITHUB_CLIENT_SECRET'; exit 1; }
       - name: Prepare tested frontend
-        run: bun run build && bun run build:vercel
+        run: bun run build && bun run build:vercel --retain-active
         env:
           FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}
           FEEDBACK_API_ORIGIN: ${{ vars.FEEDBACK_API_ORIGIN }}
+          GH_TOKEN: ${{ github.token }}
+      - name: Archive and verify commit assets
+        run: node --import tsx scripts/publish-assets.ts
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Apply D1 migrations
         run: bun run db:migrate
         env:

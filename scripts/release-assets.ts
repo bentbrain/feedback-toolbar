@@ -1,11 +1,12 @@
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
+import { releaseFiles, retrieveReleaseArtifacts } from './release-artifacts.js';
 import { originSchema } from '../src/shared/models.js';
 import { readRegularFile } from '../src/shared/files.js';
 
 const versionSchema = z.string().regex(/^[a-f0-9]{40}$/);
-const assets = ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'styles.css'];
+const assets = releaseFiles;
 async function download(url: string) {
   const response = await fetch(url, {
     redirect: 'error',
@@ -18,7 +19,12 @@ async function download(url: string) {
   return contents;
 }
 
-export async function retainActiveAssets(directory: string, service: string, release: string) {
+export async function retainActiveAssets(
+  directory: string,
+  service: string,
+  release: string,
+  retrieve: (version: string, destination: string) => Promise<void> = retrieveReleaseArtifacts,
+) {
   const origin = originSchema.parse(service);
   versionSchema.parse(release);
   const response = await fetch(`${origin}/health`, {
@@ -30,16 +36,15 @@ export async function retainActiveAssets(directory: string, service: string, rel
   if (response.status === 404) return;
   if (!response.ok) throw new Error(`Cannot establish the active release (${response.status}).`);
   const health = z
-    .object({ ok: z.literal(true), assetVersion: versionSchema.nullable() })
+    .object({ ok: z.literal(true), assetVersion: z.string().nullable() })
     .parse(await response.json());
-  if (!health.assetVersion || health.assetVersion === release) return;
-  const target = `${directory}/${health.assetVersion}`;
+  const active = health.assetVersion;
+  if (active === null) return;
+  if (!/^[a-f0-9]{40}$/.test(active)) throw new Error('Invalid active release identifier.');
+  if (active === release) return;
+  const target = `${directory}/${active}`;
   await mkdir(target, { recursive: true });
-  for (const asset of assets)
-    await writeFile(
-      `${target}/${asset}`,
-      await download(`${origin}/assets/${health.assetVersion}/${asset}`),
-    );
+  await retrieve(active, target);
 }
 
 export async function verifyPublishedAssets(directory: string, service: string) {

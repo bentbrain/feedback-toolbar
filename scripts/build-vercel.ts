@@ -32,7 +32,10 @@ for (const asset of ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'sty
   await copyFile(`dist/${asset}`, `${target}/static/${asset}`);
   if (release) await copyFile(`dist/${asset}`, `${target}/static/assets/${release}/${asset}`);
 }
-if (release) await retainActiveAssets(`${target}/static/assets`, service, release);
+if (process.argv.includes('--retain-active')) {
+  if (!release) throw new Error('A deployment release identifier is required.');
+  await retainActiveAssets(`${target}/static/assets`, service, release);
+}
 await copyFile('assets/icon.svg', `${target}/static/icon.svg`);
 if (api === service) throw new Error('The API example and toolbar require separate origins.');
 await writeFile(

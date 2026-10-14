@@ -100,6 +100,11 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
     'aria-pressed',
     'true',
   );
+  for (const emoji of ['👍', '❤️', '👀', '🎉']) {
+    await expect(
+      dialog.getByRole('button', { name: `React with ${emoji}`, exact: true }),
+    ).toHaveCount(0);
+  }
   expect(requests.filter((url) => url.includes('/emoji-data/'))).toEqual([]);
   await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
   const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
@@ -123,11 +128,11 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
   const group = dialog.getByRole('group', { name: 'Reactions', exact: true });
   await expect(group).toHaveAttribute('aria-busy', 'true');
   await expect(group.getByRole('button', { name: 'Add reaction', exact: true })).toBeDisabled();
-  await expect(group.getByRole('button', { name: 'React with 👍', exact: true })).toBeDisabled();
+  await expect(group.getByRole('button', { name: 'React with 👨‍👩‍👧‍👦', exact: true })).toBeDisabled();
   releaseReaction();
   const reaction = dialog.getByRole('button', { name: 'React with 🦋', exact: true });
   await expect(reaction).toHaveAttribute('aria-pressed', 'true');
-  await expect(reaction).toContainText('1');
+  await expect(reaction).toHaveText('🦋');
   await reaction.click();
   await expect(reaction).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
@@ -158,6 +163,52 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
   expect(requests.some((url) => url.endsWith('/api/emoji-data/v1/en/messages.json'))).toBe(true);
   expect(requests.every((url) => new URL(url).origin === f.baseURL)).toBe(true);
   expect(errors).toEqual([]);
+});
+
+test('favourites learn choices, rank frequent emojis and persist across reloads', async ({
+  page,
+  baseURL,
+}) => {
+  await fixture(page, baseURL);
+  await page.goto('/');
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  const reactions = page.getByRole('group', { name: 'Reactions', exact: true });
+  const add = reactions.getByRole('button', { name: 'Add reaction', exact: true });
+  const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
+  const favourites = page.getByRole('group', { name: 'Favourite emojis', exact: true });
+  await add.click();
+  await expect(favourites).toHaveCount(0);
+  await search.fill('butterfly');
+  await page.getByRole('gridcell', { name: 'Butterfly', exact: true }).click();
+  const butterfly = reactions.getByRole('button', { name: 'React with 🦋', exact: true });
+  await expect(butterfly).toHaveAttribute('aria-pressed', 'true');
+  await butterfly.click();
+  await expect(butterfly).toHaveCount(0);
+  await add.click();
+  await favourites.getByRole('button', { name: 'React with 🦋', exact: true }).click();
+  await expect(butterfly).toHaveAttribute('aria-pressed', 'true');
+  await add.click();
+  await search.fill('rocket');
+  await page.getByRole('gridcell', { name: 'Rocket', exact: true }).click();
+  await expect(
+    reactions.getByRole('button', { name: 'React with 🚀', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await page.reload();
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  await add.click();
+  await expect(favourites.getByRole('button')).toHaveText(['🦋', '🚀']);
+  await search.press('Escape');
+  await reactions.getByRole('button', { name: 'React with 🚀', exact: true }).click();
+  await add.click();
+  // Removing a reaction does not count as another choice.
+  await expect(favourites.getByRole('button')).toHaveText(['🦋', '🚀']);
+  await favourites.getByRole('button', { name: 'React with 🚀', exact: true }).click();
+  await expect(
+    reactions.getByRole('button', { name: 'React with 🚀', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await add.click();
+  // Equally frequent choices put the most recent one first.
+  await expect(favourites.getByRole('button')).toHaveText(['🚀', '🦋']);
 });
 
 test('mobile dark toolbar picker fits its iframe, inherits theme and isolates host styles', async ({

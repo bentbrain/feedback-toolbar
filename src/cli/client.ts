@@ -1,9 +1,11 @@
-import { mkdir, readFile, writeFile, chmod, rename, lstat } from 'node:fs/promises';
+import { mkdir, open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { installConfigSchema, originSchema } from '../shared/models.js';
+import { readRegularFile, replaceFile } from '../shared/files.js';
 
 const credentialsSchema = z.record(
   z.string(),
@@ -17,9 +19,9 @@ export const bindingKey = (server: string, projectId: string, workspace: string)
 export async function storedCredentials() {
   try {
     const path = join(directory, 'credentials.json');
-    const stat = await lstat(path);
-    if (stat.isSymbolicLink()) throw new Error('Credential files must not be symlinks.');
-    return credentialsSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+    return credentialsSchema.parse(
+      JSON.parse((await readRegularFile(path)).contents.toString('utf8')),
+    );
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return {};
     throw error;
@@ -32,17 +34,26 @@ export async function saveCredential(
   const records = await storedCredentials();
   records[key] = credential;
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
+  const folder = await open(
+    directory,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await folder.chmod(0o700);
+  } finally {
+    await folder.close();
+  }
   const path = join(directory, 'credentials.json');
-  const temp = `${path}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify(records, null, 2)}\n`, { mode: 0o600 });
-  await rename(temp, path);
-  await chmod(path, 0o600);
+  await replaceFile(path, `${JSON.stringify(records, null, 2)}\n`, 0o600);
 }
 export async function publicConfig(workspace = process.cwd()) {
   try {
     return installConfigSchema.parse(
-      JSON.parse(await readFile(join(workspace, '.feedback-toolbar.json'), 'utf8')),
+      JSON.parse(
+        (await readRegularFile(join(workspace, '.feedback-toolbar.json'))).contents.toString(
+          'utf8',
+        ),
+      ),
     );
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;

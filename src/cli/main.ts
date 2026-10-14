@@ -1,7 +1,6 @@
 import { parseArgs } from 'node:util';
 import { randomUUID, createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { z } from 'zod';
@@ -9,6 +8,7 @@ import { installation, originSchema, projectSchema, themeSchema } from '../share
 import { bindingKey, client, publicConfig, saveCredential, storedCredentials } from './client.js';
 import { installHtml } from './install.js';
 import { runWorker } from './worker.js';
+import { replaceFile } from '../shared/files.js';
 
 const parsed = parseArgs({
   allowPositionals: true,
@@ -139,10 +139,10 @@ async function init() {
   const installed = options.file
     ? await installHtml(resolve(workspace, options.file), info.snippet)
     : null;
-  await writeFile(
+  await replaceFile(
     join(workspace, '.feedback-toolbar.json'),
     JSON.stringify(info.config, null, 2) + '\n',
-    { mode: 0o644 },
+    0o644,
   );
   const key = bindingKey(connection.server, project.id, workspace);
   if (!options['no-agent']) {

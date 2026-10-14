@@ -1,5 +1,6 @@
-import { readFile, writeFile, rename, lstat } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
+import { readRegularFile, replaceFile } from '../shared/files.js';
 
 const start = '<!-- feedback-toolbar:start -->';
 const end = '<!-- feedback-toolbar:end -->';
@@ -33,20 +34,16 @@ export async function installHtml(path: string, snippet: string) {
       '--file supports HTML entry points. For framework layouts, use the installation manifest to make a source edit.',
     );
   const file = resolve(path);
-  const stat = await lstat(file);
-  if (!stat.isFile() || stat.isSymbolicLink())
-    throw new Error('Choose a regular HTML file, not a symlink.');
-  const source = await readFile(file, 'utf8');
+  const opened = await readRegularFile(file);
+  const source = opened.contents.toString('utf8');
   const next = injectHtml(source, snippet);
   if (source === next) return { path: file, changed: false };
   const backup = `${file}.feedback-toolbar.bak`;
   try {
-    await writeFile(backup, source, { flag: 'wx', mode: stat.mode });
+    await writeFile(backup, source, { flag: 'wx', mode: opened.mode });
   } catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
   }
-  const temporary = `${file}.feedback-toolbar.${process.pid}.tmp`;
-  await writeFile(temporary, next, { mode: stat.mode });
-  await rename(temporary, file);
+  await replaceFile(file, next, opened.mode);
   return { path: file, changed: true, backup };
 }

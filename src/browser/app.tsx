@@ -320,7 +320,10 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
               disabled={busy}
               onClick={() => {
                 setBusy(true);
-                void request(`/api/auth/grants/${grant}/approve`, { method: 'POST', body: {} })
+                void request(`/api/auth/grants/${encodeURIComponent(grant ?? '')}/approve`, {
+                  method: 'POST',
+                  body: {},
+                })
                   .then(load)
                   .catch((failure: unknown) => {
                     setError(messageOf(failure));

@@ -87,8 +87,33 @@ jobs:
           languages: javascript-typescript
           queries: security-extended
       - uses: github/codeql-action/analyze@f3c49fd1ef3281abc41069b3dd22807a60c963f6 # v4
+        id: analysis
         with:
           category: /language:javascript-typescript
+          wait-for-processing: true
+      - name: Require a clean analysis
+        env:
+          SARIF_DIRECTORY: ${{ steps.analysis.outputs.sarif-output }}
+        run: |
+          node --input-type=module - <<'JS'
+          import { readFile, readdir } from 'node:fs/promises';
+          import { join } from 'node:path';
+          const directory = process.env.SARIF_DIRECTORY;
+          if (!directory) throw new Error('CodeQL did not produce a SARIF directory.');
+          const reports = (await readdir(directory)).filter(file => file.endsWith('.sarif'));
+          if (!reports.length) throw new Error('CodeQL produced no analysis reports.');
+          let findings = 0;
+          for (const file of reports) {
+            const report = JSON.parse(await readFile(join(directory, file), 'utf8'));
+            if (!Array.isArray(report.runs) || !report.runs.length) throw new Error('CodeQL report is incomplete.');
+            for (const run of report.runs) {
+              if (!Array.isArray(run.results)) throw new Error('CodeQL results are missing.');
+              findings += run.results.length;
+            }
+          }
+          if (findings) throw new Error(`CodeQL reported ${findings} findings. Resolve them before merging or deploying.`);
+          console.log('CodeQL reported no findings.');
+          JS
 
   dependencies:
     name: Dependency review

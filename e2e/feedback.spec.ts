@@ -119,6 +119,32 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await expect(
     frame.getByText('Proposed spacing change is ready. Please review the diff.'),
   ).toBeVisible({ timeout: 10_000 });
+  await frame.evaluate(async () => {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: 'https://unregistered.example',
+        source: window.parent,
+        data: { type: 'feedback:navigation', url: 'https://unregistered.example' },
+      }),
+    );
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: 'http://localhost:44321',
+        source: window,
+        data: { type: 'feedback:navigation', url: 'http://localhost:44321/forged' },
+      }),
+    );
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          resolve();
+        }),
+      );
+    });
+  });
+  await expect(
+    frame.getByText('Proposed spacing change is ready. Please review the diff.'),
+  ).toBeVisible();
   await page.addStyleTag({
     content:
       '* { font-size:48px !important; color:red !important; border-radius:0 !important } iframe { opacity:0 !important }',

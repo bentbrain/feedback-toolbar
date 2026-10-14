@@ -1,16 +1,17 @@
-import { readFile, readdir, lstat } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { readRegularFile } from '../src/shared/files.js';
 
 const output = '.vercel/output';
 const config = z
   .object({ version: z.literal(3), routes: z.array(z.unknown()) })
-  .parse(JSON.parse(await readFile(`${output}/config.json`, 'utf8')));
+  .parse(JSON.parse((await readRegularFile(`${output}/config.json`)).contents.toString('utf8')));
 const files: { file: string; data: string; encoding: 'base64' }[] = [];
 for (const name of await readdir(`${output}/static`)) {
   const path = `${output}/static/${name}`;
-  if (!(await lstat(path)).isFile()) throw new Error('Deployment assets must be regular files.');
-  files.push({ file: name, data: (await readFile(path)).toString('base64'), encoding: 'base64' });
+  const opened = await readRegularFile(path);
+  files.push({ file: name, data: opened.contents.toString('base64'), encoding: 'base64' });
 }
 // This project serves only static assets and proxies dynamic requests to the Worker.
 // The API uploads these tested assets without installing framework builders or rebuilding source.

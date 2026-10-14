@@ -173,7 +173,6 @@ function Toolbar() {
     };
   }, [auth, refresh]);
   const receive = useEffectEvent((event: MessageEvent<unknown>) => {
-    if (event.origin !== parentOrigin || event.source !== parent) return;
     const result = z
       .object({
         type: z.string(),
@@ -209,6 +208,7 @@ function Toolbar() {
   });
   useEffect(() => {
     const handler = (event: MessageEvent<unknown>) => {
+      if (event.origin !== parentOrigin || event.source !== parent) return;
       receive(event);
     };
     window.addEventListener('message', handler);

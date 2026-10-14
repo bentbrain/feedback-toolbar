@@ -14,16 +14,25 @@ export async function request(
     headers?: Record<string, string>;
   } = {},
 ): Promise<unknown> {
+  if (!path.startsWith('/api/') || /[\\#]/.test(path)) throw new Error('Use a feedback API path.');
+  const endpoint = new URL(path, location.origin);
+  if (
+    endpoint.origin !== location.origin ||
+    !/^\/api\/[A-Za-z0-9_/-]+$/.test(endpoint.pathname) ||
+    /%|\.\./.test(path.split('?')[0] ?? '')
+  )
+    throw new Error('Invalid feedback API path.');
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...options.headers,
   };
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
-  const response = await fetch(path, {
+  const response = await fetch(endpoint.href, {
     method: options.method ?? 'GET',
     headers,
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     credentials: options.token ? 'omit' : 'same-origin',
+    redirect: 'error',
   });
   const data: unknown = await response.json();
   if (!response.ok) {

@@ -37,7 +37,7 @@ Add `data-feedback-id="hero-cta"` to important elements to keep anchors stable a
 
 ## Agent-assisted setup
 
-Requires Node 24 or newer and Bun 1.3.14.
+Requires Node 24 or newer and Bun 1.3.14. Use WSL on Windows for the CLI's secure file operations.
 
 ```sh
 bun install --frozen-lockfile

@@ -12,6 +12,7 @@ dist/
 .feedback-tmp/
 *.feedback-toolbar.bak
 *.feedback-toolbar.*.tmp
+.feedback-toolbar-*/
 playwright-report/
 test-results/
 *.tgz

@@ -157,7 +157,7 @@ function Toolbar() {
     [],
   );
   const refresh = useCallback(async () => {
-    if (!auth || !page) return;
+    if (!auth) return;
     const current = ++version.current;
     const query = new URLSearchParams({ status: 'open', origin: parentOrigin });
     const [list, projects, currentThread] = await Promise.all([
@@ -217,7 +217,7 @@ function Toolbar() {
       setTheme(own.theme);
       setConnecting(false);
     }
-  }, [auth, api, page, activeId, cachedThreads, setActiveDetail, setJobs, setThreads]);
+  }, [auth, api, activeId, cachedThreads, setActiveDetail, setJobs, setThreads]);
   useEffect(() => {
     let cancelled = false;
     let checking = false;
@@ -331,7 +331,7 @@ function Toolbar() {
       clearInterval(timer);
       counter.current++;
     };
-  }, [auth, refresh, setJobs, setThreads]);
+  }, [auth, refresh, page, setJobs, setThreads]);
   const receive = useEffectEvent((event: MessageEvent<unknown>) => {
     if (!boundedMessage(event.data)) return;
     const result = z

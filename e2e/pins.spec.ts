@@ -16,6 +16,51 @@ async function instrument(page: Page) {
     if (!(prototype instanceof Element)) throw new Error('Element prototype missing');
     const originalAttach = (element: Element, options: ShadowRootInit) =>
       prototype.attachShadow.call(element, options);
+    let selectorReads = 0;
+    let geometryReads = 0;
+    let animationReads = 0;
+    const queryDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'querySelectorAll');
+    const animationDescriptor = Object.getOwnPropertyDescriptor(
+      Document.prototype,
+      'getAnimations',
+    );
+    if (!queryDescriptor || !animationDescriptor)
+      throw new Error('Document inspection methods missing');
+    const documentPrototype: unknown = Object.create(Document.prototype, {
+      querySelectorAll: queryDescriptor,
+      getAnimations: animationDescriptor,
+    });
+    if (!(documentPrototype instanceof Document)) throw new Error('Document prototype missing');
+    Object.defineProperty(document, 'querySelectorAll', {
+      value(selector: string) {
+        if (selector.startsWith('#motion') || selector.startsWith('#lifecycle')) selectorReads++;
+        const query: unknown = Reflect.get(documentPrototype, 'querySelectorAll');
+        if (typeof query !== 'function') throw new Error('Selector method missing');
+        const result: unknown = Reflect.apply(query, document, [selector]);
+        if (!(result instanceof NodeList)) throw new Error('Selector result missing');
+        return result;
+      },
+    });
+    Object.defineProperty(document, 'getAnimations', {
+      configurable: true,
+      value() {
+        animationReads++;
+        return documentPrototype.getAnimations.call(document);
+      },
+    });
+    const rectDescriptor = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      'getBoundingClientRect',
+    );
+    if (!rectDescriptor) throw new Error('Geometry method missing');
+    Object.defineProperty(prototype, 'getBoundingClientRect', rectDescriptor);
+    Element.prototype.getBoundingClientRect = function () {
+      if (this.id.startsWith('motion') || this.id.startsWith('lifecycle')) geometryReads++;
+      return prototype.getBoundingClientRect.call(this);
+    };
+    Object.defineProperty(window, 'pinTestCounters', {
+      get: () => ({ selectorReads, geometryReads, animationReads }),
+    });
     Element.prototype.attachShadow = function (options) {
       const result = originalAttach(this, options);
       if (this.hasAttribute('data-feedback-host')) root = result;
@@ -200,13 +245,13 @@ test('toggle renders isolated accessible pins and click or keyboard opens the ma
   await frame.getByRole('button', { name: 'Minimize toolbar' }).click();
   await clickPin(page, 2);
   await expect(frame.getByText('First button feedback', { exact: true })).toBeVisible();
+  // The last iframe control precedes the native pin controls in tab order.
+  await frame.getByRole('button', { name: 'Sign out', exact: true }).focus();
   await page.keyboard.press('Tab');
-  // Tab from the host document reaches native controls outside the iframe.
-  await page.mouse.click(20, 20);
-  for (let count = 0; count < 30 && !(await pins(page)).some((pin) => pin.focused); count++)
-    await page.keyboard.press('Tab');
+  await expect
+    .poll(async () => (await pins(page)).find((pin) => pin.focused)?.outline)
+    .toBe('solid');
   const focused = (await pins(page)).find((pin) => pin.focused);
-  expect(focused?.outline).toBe('solid');
   await page.keyboard.press('Enter');
   await expect(
     frame.getByText(focused?.text === '1' ? 'Second button feedback' : 'First button feedback', {
@@ -499,4 +544,490 @@ test('system theme pins follow the applied default dark accent and OS theme chan
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'light');
   await expect.poll(async () => (await pins(page))[0]?.color).toBe('rgb(6, 71, 255)');
   expect((await pins(page))[0]?.background).toBe('rgb(255, 255, 255)');
+});
+
+test('visibility regression hides content-visibility descendants and fully clipped anchors', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#visibility-anchor', 'Visibility regression');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const container = document.createElement('section');
+    container.id = 'visibility-container';
+    container.style.cssText = 'position:fixed;left:100px;top:150px;width:120px;height:100px;';
+    const anchor = document.createElement('button');
+    anchor.id = 'visibility-anchor';
+    anchor.textContent = 'Anchor';
+    anchor.style.cssText = 'position:absolute;left:10px;top:10px;width:80px;height:50px;';
+    container.append(anchor);
+    document.body.append(container);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await page.locator('#visibility-container').evaluate((container) => {
+    if (container instanceof HTMLElement) container.style.contentVisibility = 'hidden';
+  });
+  const hiddenRect = await page.locator('#visibility-anchor').boundingBox();
+  expect(hiddenRect?.width).toBeGreaterThan(0);
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await page.locator('#visibility-container').evaluate((container) => {
+    if (container instanceof HTMLElement) {
+      container.style.contentVisibility = 'visible';
+      container.style.overflow = 'hidden';
+    }
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await page.locator('#visibility-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) anchor.style.left = '150px';
+  });
+  const clippedRect = await page.locator('#visibility-anchor').boundingBox();
+  expect(clippedRect?.x).toBeGreaterThan(0);
+  expect(clippedRect?.x).toBeLessThan(1280);
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+});
+
+test('motion regression keeps a pin attached at intermediate CSS transition positions', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#motion-anchor', 'Moving feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const anchor = document.createElement('button');
+    anchor.id = 'motion-anchor';
+    anchor.textContent = 'Moving anchor';
+    anchor.style.cssText =
+      'position:fixed;left:20px;top:160px;width:100px;height:50px;transition:left 3s linear;';
+    document.body.append(anchor);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await page.locator('#motion-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) anchor.style.left = '320px';
+  });
+  await expect
+    .poll(async () => (await page.locator('#motion-anchor').boundingBox())?.x)
+    .toBeGreaterThan(100);
+  const position = await page.evaluate(() => {
+    const root: unknown = Reflect.get(window, 'pinTestRoot');
+    if (!(root instanceof ShadowRoot)) throw new Error('Closed test root missing');
+    const pin = root.querySelector('button');
+    const anchor = document.getElementById('motion-anchor');
+    if (!pin || !anchor) throw new Error('Moving anchor or pin missing');
+    return { pin: pin.getBoundingClientRect().x, anchor: anchor.getBoundingClientRect().x };
+  });
+  expect(position.anchor).toBeLessThan(320);
+  expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+});
+
+test('visibility regression hides an in-viewport anchor wholly outside an overflow clip', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#clipped-anchor', 'Clipped feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const container = document.createElement('section');
+    container.style.cssText =
+      'position:fixed;left:100px;top:150px;width:120px;height:100px;overflow:hidden';
+    const anchor = document.createElement('button');
+    anchor.id = 'clipped-anchor';
+    anchor.textContent = 'Clipped anchor';
+    anchor.style.cssText = 'position:absolute;left:150px;top:10px;width:80px;height:50px;';
+    container.append(anchor);
+    document.body.append(container);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  const rect = await page.locator('#clipped-anchor').boundingBox();
+  expect(rect?.width).toBeGreaterThan(0);
+  expect(rect?.x).toBeGreaterThan(0);
+  expect(rect?.x).toBeLessThan(1280);
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+});
+
+test('partial overflow clips place pins inside scaled padding edges and honor each overflow axis', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#axis-anchor', 'Partially clipped feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const container = document.createElement('section');
+    container.id = 'axis-container';
+    container.style.cssText =
+      'position:fixed;left:100px;top:150px;width:160px;height:120px;border:10px solid black;padding:10px;transform:scale(1.5);transform-origin:top left;overflow-x:clip;overflow-y:visible';
+    const anchor = document.createElement('button');
+    anchor.id = 'axis-anchor';
+    anchor.textContent = 'Partially clipped';
+    anchor.style.cssText = 'position:absolute;left:-30px;top:130px;width:100px;height:50px';
+    container.append(anchor);
+    document.body.append(container);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(115);
+  const anchor = await page.locator('#axis-anchor').boundingBox();
+  expect(anchor?.x).toBe(70);
+  expect((await pins(page))[0]?.y).toBe(anchor?.y);
+  await clickPin(page, 1);
+  await expect(frame.getByText('Partially clipped feedback', { exact: true })).toBeVisible();
+  await page.locator('#axis-anchor').evaluate((element) => {
+    if (element instanceof HTMLElement) element.style.left = '-95px';
+  });
+  // Only 7.5px remains visible; there is no safe space for a 32px control.
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await page.locator('#axis-anchor').evaluate((element) => {
+    if (element instanceof HTMLElement) element.style.left = '-30px';
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await page.locator('#axis-container').evaluate((container) => {
+    if (container instanceof HTMLElement) {
+      container.style.overflowX = 'visible';
+      container.style.overflowY = 'clip';
+    }
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await page.locator('#axis-anchor').evaluate((element) => {
+    if (element instanceof HTMLElement) element.style.top = '20px';
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  expect((await pins(page))[0]?.x).toBe(70);
+});
+
+async function counters(page: Page) {
+  const value: unknown = await page.evaluate(() => {
+    const result: unknown = Reflect.get(window, 'pinTestCounters');
+    return result;
+  });
+  return z
+    .object({ selectorReads: z.number(), geometryReads: z.number(), animationReads: z.number() })
+    .parse(value);
+}
+
+async function intermediatePosition(page: Page, id: string) {
+  return page.evaluate((id) => {
+    const root: unknown = Reflect.get(window, 'pinTestRoot');
+    if (!(root instanceof ShadowRoot)) throw new Error('Closed test root missing');
+    const pin = root.querySelector('button');
+    const anchor = document.getElementById(id);
+    if (!pin || !anchor) throw new Error('Moving pin or anchor missing');
+    return { pin: pin.getBoundingClientRect().x, anchor: anchor.getBoundingClientRect().x };
+  }, id);
+}
+
+async function waitForFrames(page: Page, duration: number) {
+  await page.evaluate(
+    (duration) =>
+      new Promise<void>((resolve) => {
+        const start = performance.now();
+        const next = () => {
+          if (performance.now() - start >= duration) resolve();
+          else requestAnimationFrame(next);
+        };
+        requestAnimationFrame(next);
+      }),
+    duration,
+  );
+}
+
+test('ancestor Web Animations track intermediate positions, pause and cancel without idle selector or frame work', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#motion-child', 'Ancestor motion feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const parent = document.createElement('section');
+    parent.id = 'motion-parent';
+    parent.style.cssText = 'position:fixed;left:20px;top:160px;width:100px;height:50px';
+    const anchor = document.createElement('button');
+    anchor.id = 'motion-child';
+    anchor.textContent = 'Moving child';
+    anchor.style.cssText = 'width:100px;height:50px';
+    parent.append(anchor);
+    document.body.append(parent);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 200);
+  const idle = await counters(page);
+  await waitForFrames(page, 400);
+  const quiet = await counters(page);
+  expect(quiet.selectorReads - idle.selectorReads).toBe(0);
+  expect(quiet.geometryReads - idle.geometryReads).toBe(0);
+  expect(quiet.animationReads - idle.animationReads).toBeLessThanOrEqual(3);
+  await page.evaluate(() => {
+    const parent = document.getElementById('motion-parent');
+    if (!parent) throw new Error('Moving ancestor missing');
+    const animation = parent.animate(
+      [{ transform: 'translateX(0)' }, { transform: 'translateX(300px)' }],
+      { duration: 3000, iterations: Infinity },
+    );
+    Object.defineProperty(window, 'pinTestAnimation', { value: animation, configurable: true });
+  });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'motion-child')).anchor)
+    .toBeGreaterThan(100);
+  const before = await counters(page);
+  for (let sample = 0; sample < 4; sample++) {
+    const position = await intermediatePosition(page, 'motion-child');
+    expect(position.anchor).toBeLessThan(320);
+    expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+    await waitForFrames(page, 100);
+  }
+  expect((await counters(page)).selectorReads - before.selectorReads).toBe(0);
+  await page.evaluate(() => {
+    const animation: unknown = Reflect.get(window, 'pinTestAnimation');
+    if (!(animation instanceof Animation)) throw new Error('Web Animation missing');
+    animation.pause();
+  });
+  await waitForFrames(page, 200);
+  const paused = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - paused.geometryReads).toBe(0);
+  await page.evaluate(() => {
+    const animation: unknown = Reflect.get(window, 'pinTestAnimation');
+    if (!(animation instanceof Animation)) throw new Error('Web Animation missing');
+    animation.play();
+  });
+  await expect
+    .poll(async () => (await counters(page)).geometryReads)
+    .toBeGreaterThan(paused.geometryReads);
+  await page.evaluate(() => {
+    const animation: unknown = Reflect.get(window, 'pinTestAnimation');
+    if (!(animation instanceof Animation)) throw new Error('Web Animation missing');
+    animation.cancel();
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 200);
+  const cancelled = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - cancelled.geometryReads).toBe(0);
+  await frame.getByRole('switch', { name: 'Hide feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  const empty = await counters(page);
+  await waitForFrames(page, 400);
+  expect(await counters(page)).toEqual(empty);
+});
+
+test('infinite ancestor CSS animation follows motion and stops frame sampling for reduced motion and cancellation', async ({
+  page,
+}) => {
+  await instrument(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const project = await createProject(page);
+  await createThread(page, project.id, '#motion-child', 'CSS ancestor feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.addStyleTag({
+    content:
+      '@keyframes pin-test-move { from { transform:translateX(0) } to { transform:translateX(300px) } } @media (prefers-reduced-motion:reduce) { #motion-parent { animation:none!important } }',
+  });
+  await page.evaluate(() => {
+    const parent = document.createElement('section');
+    parent.id = 'motion-parent';
+    parent.style.cssText = 'position:fixed;left:20px;top:160px;width:100px;height:50px';
+    const anchor = document.createElement('button');
+    anchor.id = 'motion-child';
+    anchor.textContent = 'CSS child';
+    anchor.style.cssText = 'width:100px;height:50px';
+    parent.append(anchor);
+    document.body.append(parent);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await page.locator('#motion-parent').evaluate((parent) => {
+    if (parent instanceof HTMLElement) parent.style.animation = 'pin-test-move 3s linear infinite';
+  });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'motion-child')).anchor)
+    .toBeGreaterThan(100);
+  const position = await intermediatePosition(page, 'motion-child');
+  expect(position.anchor).toBeLessThan(320);
+  expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 200);
+  const reduced = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - reduced.geometryReads).toBe(0);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'motion-child')).anchor)
+    .toBeGreaterThan(100);
+  await page.locator('#motion-parent').evaluate((parent) => {
+    if (parent instanceof HTMLElement) parent.style.animation = 'none';
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 200);
+  const cancelled = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - cancelled.geometryReads).toBe(0);
+});
+
+test('destroy removes moving pins and stops geometry reads and animation registry polling', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#lifecycle-anchor', 'Lifecycle feedback');
+  await page.route('http://localhost:44330/embed-module.js', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), 'access-control-allow-origin': website },
+    });
+  });
+  await page.goto(`${website}/`);
+  await page.evaluate(async (projectId) => {
+    const anchor = document.createElement('button');
+    anchor.id = 'lifecycle-anchor';
+    anchor.textContent = 'Lifecycle anchor';
+    anchor.style.cssText = 'position:fixed;left:20px;top:160px;width:100px;height:50px';
+    document.body.append(anchor);
+    const address = 'http://localhost:44330/embed-module.js';
+    const library: unknown = await import(address);
+    if (typeof library !== 'object' || library === null) throw new Error('Embed module missing');
+    const mount: unknown = Reflect.get(library, 'mountFeedback');
+    if (typeof mount !== 'function') throw new Error('Embed mount function missing');
+    const controller: unknown = Reflect.apply(mount, null, [
+      { server: 'http://localhost:44330', projectId },
+    ]);
+    if (typeof controller !== 'object' || controller === null)
+      throw new Error('Embed controller missing');
+    const destroy: unknown = Reflect.get(controller, 'destroy');
+    if (typeof destroy !== 'function') throw new Error('Embed destroy function missing');
+    Object.defineProperty(window, 'pinTestDestroy', {
+      value() {
+        Reflect.apply(destroy, controller, []);
+      },
+    });
+  }, project.id);
+  await expect(page.locator('[data-feedback-host]')).toBeVisible({ timeout: 15_000 });
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar frame missing');
+  await expect(
+    frame.getByRole('switch', { name: 'Show feedback pins', exact: true }),
+  ).toBeEnabled();
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await page.locator('#lifecycle-anchor').evaluate((anchor) => {
+    anchor.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(300px)' }], {
+      duration: 3000,
+      iterations: Infinity,
+    });
+  });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'lifecycle-anchor')).anchor)
+    .toBeGreaterThan(100);
+  const position = await intermediatePosition(page, 'lifecycle-anchor');
+  expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+  await page.evaluate(() => {
+    const destroy: unknown = Reflect.get(window, 'pinTestDestroy');
+    if (typeof destroy !== 'function') throw new Error('Test destroy function missing');
+    Reflect.apply(destroy, null, []);
+  });
+  await expect(page.locator('[data-feedback-host]')).toHaveCount(0);
+  expect(await pins(page)).toEqual([]);
+  const stopped = await counters(page);
+  await waitForFrames(page, 400);
+  expect(await counters(page)).toEqual(stopped);
+});
+
+test('viewport-fixed descendants escape ordinary ancestor overflow, while transformed containing blocks clip them', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#fixed-anchor', 'Fixed feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const container = document.createElement('section');
+    container.id = 'fixed-container';
+    container.style.cssText =
+      'position:fixed;left:100px;top:150px;width:120px;height:100px;overflow:hidden';
+    const anchor = document.createElement('button');
+    anchor.id = 'fixed-anchor';
+    anchor.textContent = 'Fixed anchor';
+    anchor.style.cssText = 'position:fixed;left:300px;top:160px;width:80px;height:50px';
+    container.append(anchor);
+    document.body.append(container);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  expect((await pins(page))[0]?.x).toBe(300);
+  await page.locator('#fixed-container').evaluate((container) => {
+    if (container instanceof HTMLElement) container.style.transform = 'translateX(0)';
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+});
+
+test('Show element can still scroll to an off-screen public anchor while pins remain viewport scoped', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(
+    page,
+    project.id,
+    '[data-feedback-id="hero-heading"]',
+    'Off-screen heading feedback',
+  );
+  const frame = await openToolbar(page, project.id);
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await clickPin(page, 1);
+  await expect(frame.getByText('Off-screen heading feedback', { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    scrollTo(0, 1000);
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await frame.getByRole('button', { name: 'Show element', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => scrollY)).toBeLessThan(200);
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await expect(frame.getByRole('alert')).toHaveCount(0);
+});
+
+test('CSS transition events keep pins attached and stop after cancellation when animation registry is unavailable', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#motion-anchor', 'Transition fallback feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'getAnimations', { value: undefined, configurable: true });
+    const anchor = document.createElement('button');
+    anchor.id = 'motion-anchor';
+    anchor.textContent = 'Transition anchor';
+    anchor.style.cssText =
+      'position:fixed;left:20px;top:160px;width:100px;height:50px;transition:left 3s linear';
+    document.body.append(anchor);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await page.locator('#motion-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) anchor.style.left = '320px';
+  });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'motion-anchor')).anchor)
+    .toBeGreaterThan(100);
+  const position = await intermediatePosition(page, 'motion-anchor');
+  expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+  await page.locator('#motion-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) {
+      anchor.style.transition = 'none';
+      anchor.style.left = '120px';
+    }
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(120);
+  await waitForFrames(page, 200);
+  const stopped = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - stopped.geometryReads).toBe(0);
 });

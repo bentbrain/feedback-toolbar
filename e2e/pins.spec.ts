@@ -370,6 +370,154 @@ test('selection keeps an Astro table header cell granular through hover and comp
     .toBe('none');
 });
 
+for (const marker of ['distinct', 'duplicate', 'oversized']) {
+  test(`deep child selection saves a unique selector with ${marker} ancestor markers`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate((markerKind) => {
+      const main = document.querySelector('main');
+      if (!main) throw new Error('Main missing');
+      const child =
+        '<div><div><div><div><div><div><button type="button"><span><svg width="24" height="24" viewBox="0 0 24 24"><path d="M2 2h20v20H2z" /></svg></span></button></div></div></div></div></div></div>';
+      main.innerHTML = ['primary', 'secondary']
+        .map((name) => {
+          const markerValue =
+            markerKind === 'distinct'
+              ? name
+              : markerKind === 'duplicate'
+                ? 'shared'
+                : 'x'.repeat(710);
+          return `<section id="repeated-editor" data-feedback-id="editor-${markerValue}">${child}</section>`;
+        })
+        .join('');
+    }, marker);
+    await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+    await page.locator('main section:first-of-type path').click();
+    await frame.getByLabel('What would you like to change?').fill('Adjust this nested icon');
+    const posted = page.waitForResponse(
+      (response) => response.url().endsWith('/threads') && response.request().method() === 'POST',
+    );
+    await frame.getByRole('button', { name: 'Post feedback', exact: true }).click();
+    const result = z.object({ thread: threadSchema }).parse(await (await posted).json());
+    expect(result.thread.context.anchor.tag).toBe('path');
+    expect(
+      await page.evaluate((selector) => {
+        const matches = document.querySelectorAll(selector);
+        return (
+          matches.length === 1 &&
+          matches[0] === document.querySelector('main section:first-of-type path')
+        );
+      }, result.thread.context.anchor.selector),
+    ).toBe(true);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+  });
+}
+
+for (const exit of ['Escape', 'Cancel selection', 'navigation', 'minimize']) {
+  test(`an unresolvable selection warning clears after ${exit} and can recover on a containing element`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate(() => {
+      const main = document.querySelector('main');
+      if (!main) throw new Error('Main missing');
+      const child =
+        '<div>'.repeat(150) +
+        '<button type="button">Nested control</button>' +
+        '</div>'.repeat(150);
+      main.innerHTML = `<section>${child}</section><section>${child}</section>`;
+      main.style.padding = '24px';
+    });
+    await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+    await page.locator('main section:first-of-type button').click();
+    await expect(frame.getByRole('alert')).toHaveText(
+      'This element cannot be identified reliably. Select a containing element.',
+    );
+    if (exit === 'Escape') await page.keyboard.press('Escape');
+    else if (exit === 'navigation') {
+      await page.evaluate(() => {
+        history.pushState({}, '', '/owner');
+      });
+      await expect(
+        frame.getByRole('button', { name: 'Cancel selection', exact: true }),
+      ).toBeHidden();
+    } else if (exit === 'minimize') {
+      await frame.getByRole('button', { name: 'Minimize toolbar', exact: true }).click();
+      await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+    } else await frame.getByRole('button', { name: 'Cancel selection', exact: true }).click();
+    await expect(frame.getByRole('alert')).toBeHidden();
+    await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+    await expect(frame.getByRole('alert')).toBeHidden();
+    await page.locator('main section:first-of-type button').click();
+    await expect(frame.getByRole('alert')).toBeVisible();
+    await expect(
+      frame.getByRole('button', { name: 'Cancel selection', exact: true }),
+    ).toBeVisible();
+    await page.locator('main').click({ position: { x: 2, y: 2 } });
+    await expect(frame.getByLabel('What would you like to change?')).toBeVisible();
+    await expect(frame.getByRole('alert')).toBeHidden();
+  });
+}
+
+for (const target of ['#editor-title', '#editor-paragraph']) {
+  test(`redacted editor target ${target} remains granular and resolves its feedback pin`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate(() => {
+      const main = document.querySelector('main');
+      if (!main) throw new Error('Main missing');
+      main.setAttribute('data-feedback-private', '');
+      main.setAttribute('data-feedback-redact', '');
+      main.innerHTML =
+        '<label for="editor-title">Title</label><input id="editor-title" value="Unpublished title" aria-label="Unpublished title metadata"><div contenteditable="true"><p id="editor-paragraph" aria-label="Unpublished paragraph metadata">Unpublished paragraph</p></div>';
+    });
+    const element = page.locator(target);
+    await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+    await element.click();
+    await expect(frame.getByText(target, { exact: true })).toBeVisible();
+    await expect(frame.getByText('[Private element]', { exact: true })).toBeVisible();
+    await frame.getByLabel('What would you like to change?').fill('Adjust this editor element');
+    const posted = page.waitForResponse(
+      (response) => response.url().endsWith('/threads') && response.request().method() === 'POST',
+    );
+    await frame.getByRole('button', { name: 'Post feedback', exact: true }).click();
+    const result = z.object({ thread: threadSchema }).parse(await (await posted).json());
+    expect(result.thread.context.anchor).toMatchObject({
+      selector: target,
+      text: '[Private element]',
+      label: '',
+    });
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+    if (target === '#editor-paragraph')
+      await page.screenshot({ path: '.data/review/editor-anchor-after.png' });
+    await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+    await clickPin(page, 1);
+    await expect(frame.getByText('Adjust this editor element', { exact: true })).toBeVisible();
+    await page.locator('main').evaluate((node) => {
+      node.removeAttribute('data-feedback-redact');
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+    await page.locator('main').evaluate((node) => {
+      node.setAttribute('data-feedback-redact', '');
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+    await element.evaluate((node) => {
+      node.setAttribute('data-feedback-private', '');
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+  });
+}
+
 test('toggle renders isolated accessible pins and click or keyboard opens the matching thread in place', async ({
   page,
 }) => {

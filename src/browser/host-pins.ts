@@ -1,7 +1,7 @@
 import type { FeedbackPin } from './pin-protocol.js';
 
-const privateSelector =
-  '[data-feedback-private]:not([data-feedback-redact]),input,textarea,select,[contenteditable],[data-feedback-host]';
+const privateSelector = '[data-feedback-private]:not([data-feedback-redact]),[data-feedback-host]';
+const editableSelector = 'input,textarea,select,[contenteditable]';
 
 const paintOnlyProperties = new Set([
   'opacity',
@@ -88,7 +88,10 @@ function pinPosition(
 function resolveAnchor(selector: string): Element | null {
   const matches = document.querySelectorAll(selector);
   const element = matches.length === 1 ? matches.item(0) : null;
-  return element && !element.closest(privateSelector) ? element : null;
+  if (!element || element.closest(privateSelector)) return null;
+  // Editable targets have no captured values or text inside an explicitly redacted region.
+  if (element.closest(editableSelector) && !element.closest('[data-feedback-redact]')) return null;
+  return element;
 }
 
 function paintContainment(style: CSSStyleDeclaration): boolean {

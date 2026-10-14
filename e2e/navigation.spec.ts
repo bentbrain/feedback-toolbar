@@ -39,6 +39,21 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText('open conversation', { exact: true })).toBeVisible();
 });
 
+test('framework inline scripts use the response CSP nonce', async ({ page }) => {
+  const response = await page.reload();
+  const policy = response?.headers()['content-security-policy'];
+  const nonce = await page.locator('meta[name="csp-nonce"]').getAttribute('content');
+  expect(nonce).toBeTruthy();
+  expect(nonce).not.toBe('__FEEDBACK_NONCE__');
+  expect(policy).toContain(`'nonce-${nonce}'`);
+  const scripts = await page.evaluate(() =>
+    [...document.scripts].filter((script) => !script.src).map((script) => script.nonce),
+  );
+  expect(scripts.length).toBeGreaterThan(0);
+  expect(scripts.every((value) => value === nonce)).toBe(true);
+  await expect(page.getByText('open conversation', { exact: true })).toBeVisible();
+});
+
 test('sidebar navigation supports URLs, reloads, and browser back and forward', async ({
   page,
 }) => {

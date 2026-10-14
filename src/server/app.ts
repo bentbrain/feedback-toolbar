@@ -1271,12 +1271,7 @@ export function createApp(options: Options) {
     );
     return c.html(html('Feedback toolbar', 'toolbar.js', 'styles.css', c.get('nonce')));
   });
-  const dashboard = (nonce: string) =>
-    options.dashboard
-      ?.replaceAll('__FEEDBACK_NONCE__', nonce)
-      .replace(/<script\b([^>]*)>/g, (tag: string, attributes: string) =>
-        attributes.includes(' nonce=') ? tag : `<script nonce="${nonce}"${attributes}>`,
-      );
+  const dashboard = (nonce: string) => options.dashboard?.replaceAll('__FEEDBACK_NONCE__', nonce);
   for (const path of [
     '/',
     '/feedback',

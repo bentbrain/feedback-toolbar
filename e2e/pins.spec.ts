@@ -417,35 +417,53 @@ for (const marker of ['distinct', 'duplicate', 'oversized']) {
   });
 }
 
-test('an unresolvable selection stays in selection mode and can recover on a containing element', async ({
-  page,
-}) => {
-  await instrument(page);
-  const project = await createProject(page);
-  const frame = await openToolbar(page, project.id);
-  await page.evaluate(() => {
-    const main = document.querySelector('main');
-    if (!main) throw new Error('Main missing');
-    const child =
-      '<div>'.repeat(150) + '<button type="button">Nested control</button>' + '</div>'.repeat(150);
-    main.innerHTML = `<section>${child}</section><section>${child}</section>`;
-    main.style.padding = '24px';
+for (const exit of ['Escape', 'Cancel selection', 'navigation', 'minimize']) {
+  test(`an unresolvable selection warning clears after ${exit} and can recover on a containing element`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate(() => {
+      const main = document.querySelector('main');
+      if (!main) throw new Error('Main missing');
+      const child =
+        '<div>'.repeat(150) +
+        '<button type="button">Nested control</button>' +
+        '</div>'.repeat(150);
+      main.innerHTML = `<section>${child}</section><section>${child}</section>`;
+      main.style.padding = '24px';
+    });
+    await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+    await page.locator('main section:first-of-type button').click();
+    await expect(frame.getByRole('alert')).toHaveText(
+      'This element cannot be identified reliably. Select a containing element.',
+    );
+    if (exit === 'Escape') await page.keyboard.press('Escape');
+    else if (exit === 'navigation') {
+      await page.evaluate(() => {
+        history.pushState({}, '', '/owner');
+      });
+      await expect(
+        frame.getByRole('button', { name: 'Cancel selection', exact: true }),
+      ).toBeHidden();
+    } else if (exit === 'minimize') {
+      await frame.getByRole('button', { name: 'Minimize toolbar', exact: true }).click();
+      await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+    } else await frame.getByRole('button', { name: 'Cancel selection', exact: true }).click();
+    await expect(frame.getByRole('alert')).toBeHidden();
+    await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+    await expect(frame.getByRole('alert')).toBeHidden();
+    await page.locator('main section:first-of-type button').click();
+    await expect(frame.getByRole('alert')).toBeVisible();
+    await expect(
+      frame.getByRole('button', { name: 'Cancel selection', exact: true }),
+    ).toBeVisible();
+    await page.locator('main').click({ position: { x: 2, y: 2 } });
+    await expect(frame.getByLabel('What would you like to change?')).toBeVisible();
+    await expect(frame.getByRole('alert')).toBeHidden();
   });
-  await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
-  await page.locator('main section:first-of-type button').click();
-  await expect(frame.getByRole('alert')).toHaveText(
-    'This element cannot be identified reliably. Select a containing element.',
-  );
-  await page.keyboard.press('Escape');
-  await expect(frame.getByRole('alert')).toBeHidden();
-  await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
-  await page.locator('main section:first-of-type button').click();
-  await expect(frame.getByRole('alert')).toBeVisible();
-  await expect(frame.getByRole('button', { name: 'Cancel selection', exact: true })).toBeVisible();
-  await page.locator('main').click({ position: { x: 2, y: 2 } });
-  await expect(frame.getByLabel('What would you like to change?')).toBeVisible();
-  await expect(frame.getByRole('alert')).toBeHidden();
-});
+}
 
 for (const target of ['#editor-title', '#editor-paragraph']) {
   test(`redacted editor target ${target} remains granular and resolves its feedback pin`, async ({

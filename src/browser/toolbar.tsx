@@ -117,6 +117,7 @@ function Toolbar() {
   const [role, setRole] = useState('viewer');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [selectionUnavailable, setSelectionUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<{
@@ -263,6 +264,7 @@ function Toolbar() {
       visible: configured && (Boolean(auth && verified) || connecting),
     });
     if (!auth) {
+      setSelectionUnavailable(false);
       setShowPins(false);
       setVerified(false);
       send({ type: 'feedback:clear' });
@@ -410,12 +412,9 @@ function Toolbar() {
       setDraft('');
       setError('');
     }
-    if (data.type === 'feedback:selection-cancelled') {
-      setScreen('list');
-      setError('');
-    }
+    if (data.type === 'feedback:selection-cancelled') setScreen('list');
     if (data.type === 'feedback:selection-unavailable' && screen === 'selecting')
-      setError('This element cannot be identified reliably. Select a containing element.');
+      setSelectionUnavailable(true);
     if (data.type === 'feedback:anchor-status' && data.found === false)
       setError('This element moved or is ambiguous. The original context is still attached.');
   });
@@ -508,6 +507,7 @@ function Toolbar() {
   const select = () => {
     setExpanded(true);
     setError('');
+    setSelectionUnavailable(false);
     if (!auth) return;
     if (role === 'viewer') {
       setError('You have view-only access to this project.');
@@ -651,6 +651,11 @@ function Toolbar() {
     if (job?.status === 'queued') toast.success('Queued.');
     else if (job) toast.message(`Work ${job.status}.`);
   };
+  const displayedError =
+    error ||
+    (auth && screen === 'selecting' && selectionUnavailable
+      ? 'This element cannot be identified reliably. Select a containing element.'
+      : '');
   return (
     <TooltipProvider>
       <Toaster position="top-center" theme={appliedTheme.mode} />
@@ -728,12 +733,12 @@ function Toolbar() {
               </IconAction>
             </div>
           </header>
-          {error ? (
+          {displayedError ? (
             <p
               role="alert"
               className="mx-4 mt-3 rounded-lg border bg-muted/40 p-3 text-[11px] leading-5 text-destructive"
             >
-              {error}
+              {displayedError}
             </p>
           ) : null}
           {!auth ? (

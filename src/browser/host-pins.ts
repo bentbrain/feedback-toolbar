@@ -305,10 +305,15 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
     entries.forEach(({ button }, index) => {
       const anchor = anchors[index];
       const group = anchor ? groups.get(anchor) : undefined;
-      button.hidden = true;
-      if (!anchor || !group) return;
+      if (!anchor || !group) {
+        button.hidden = true;
+        return;
+      }
       const rect = bounds.get(anchor);
-      if (!rect) return;
+      if (!rect) {
+        button.hidden = true;
+        return;
+      }
       const offset = group.indexOf(index);
       const left = Math.max(8, rect.left);
       const top = Math.max(8, rect.top);
@@ -317,7 +322,10 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       const columns = Math.max(1, Math.floor((right - left + 4) / 36));
       const x = Math.min(innerWidth - 40, left) + (offset % columns) * 36;
       const y = top + Math.floor(offset / columns) * 36;
-      if (x + 32 > right || y + 32 > bottom) return;
+      if (x + 32 > right || y + 32 > bottom) {
+        button.hidden = true;
+        return;
+      }
       button.style.left = `${x}px`;
       button.style.top = `${y}px`;
       button.setAttribute(

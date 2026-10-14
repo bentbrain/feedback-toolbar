@@ -1441,3 +1441,31 @@ test('outside-subtree CSS fallback follows ancestor-sibling motion and stops for
   await waitForFrames(page, 400);
   expect(await counters(page)).toEqual(empty);
 });
+
+test('keyboard focus remains on a pin while layout animations redraw its position', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '[data-feedback-id="hero-button"]', 'Focused pin feedback');
+  const frame = await openToolbar(page, project.id);
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await frame.getByRole('button', { name: 'Sign out', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect.poll(async () => (await pins(page)).find((pin) => pin.focused)?.text).toBe('1');
+  await page.evaluate(() => {
+    const spacer = document.createElement('div');
+    spacer.style.cssText = 'position:fixed;top:0;left:0;height:1px;pointer-events:none';
+    document.body.append(spacer);
+    spacer.animate([{ width: '0px' }, { width: '300px' }], {
+      duration: 1000,
+      iterations: Infinity,
+    });
+  });
+  await page.waitForTimeout(200);
+  expect((await pins(page)).find((pin) => pin.focused)?.outline).toBe('solid');
+  await page.keyboard.press('Enter');
+  await expect(frame.getByText('Focused pin feedback', { exact: true })).toBeVisible();
+});

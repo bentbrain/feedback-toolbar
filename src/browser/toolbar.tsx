@@ -411,6 +411,8 @@ function Toolbar() {
       setError('');
     }
     if (data.type === 'feedback:selection-cancelled') setScreen('list');
+    if (data.type === 'feedback:selection-unavailable' && screen === 'selecting')
+      setError('This element cannot be identified reliably. Select a containing element.');
     if (data.type === 'feedback:anchor-status' && data.found === false)
       setError('This element moved or is ambiguous. The original context is still attached.');
   });

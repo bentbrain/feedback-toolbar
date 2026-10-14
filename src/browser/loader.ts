@@ -36,22 +36,24 @@ function sanitizeText(element: Element): string {
     });
   return clone.textContent.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
-function selectorFor(element: Element): string {
-  const stable = element.getAttribute('data-feedback-id');
-  if (stable) return `[data-feedback-id="${CSS.escape(stable)}"]`;
-  if (element.id) return `#${CSS.escape(element.id)}`;
+function selectorFor(element: Element): string | null {
+  const identifies = (selector: string) => {
+    if (!selector || selector.length > 700) return false;
+    const matches = document.querySelectorAll(selector);
+    return matches.length === 1 && matches[0] === element;
+  };
   const parts: string[] = [];
   let current: Element | null = element;
-  while (current && parts.length < 6 && current !== document.documentElement) {
+  while (current && current !== document.documentElement) {
     const tag = current.tagName.toLowerCase();
     const stableAncestor = current.getAttribute('data-feedback-id');
-    if (stableAncestor || current.id) {
-      parts.unshift(
-        stableAncestor
-          ? `[data-feedback-id="${CSS.escape(stableAncestor)}"]`
-          : `#${CSS.escape(current.id)}`,
-      );
-      break;
+    const anchors = [
+      ...(stableAncestor ? [`[data-feedback-id="${CSS.escape(stableAncestor)}"]`] : []),
+      ...(current.id ? [`#${CSS.escape(current.id)}`] : []),
+    ];
+    for (const anchor of anchors) {
+      const candidate = [anchor, ...parts].join(' > ');
+      if (identifies(candidate)) return candidate;
     }
     const parent: Element | null = current.parentElement;
     const siblings = parent
@@ -59,9 +61,13 @@ function selectorFor(element: Element): string {
       : [];
     const index = siblings.indexOf(current) + 1;
     parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index})` : tag);
+    const candidate = parts.join(' > ');
+    if (candidate.length > 700) return null;
+    if (parts.length >= 6 && identifies(candidate)) return candidate;
     current = parent;
   }
-  return parts.join(' > ').slice(0, 700);
+  const candidate = parts.join(' > ');
+  return identifies(candidate) ? candidate : null;
 }
 
 export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
@@ -180,7 +186,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
         : null;
     paint();
   };
-  const contextFor = (element: Element) => {
+  const contextFor = (element: Element, selector: string) => {
     const rect = element.getBoundingClientRect();
     const page = new URL(location.href);
     page.search = '';
@@ -190,7 +196,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
       viewport: { width: innerWidth, height: innerHeight },
       deployment: options.deployment ?? null,
       anchor: {
-        selector: selectorFor(element),
+        selector,
         feedbackId: element.getAttribute('data-feedback-id')?.slice(0, 120) ?? null,
         tag: element.tagName.toLowerCase().slice(0, 40),
         text: sanitizeText(element),
@@ -214,10 +220,17 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
       event.target.closest('[data-feedback-private]:not([data-feedback-redact])')
     )
       return;
+    const selector = selectorFor(event.target);
+    if (!selector) {
+      marked = null;
+      paint();
+      send({ type: 'feedback:selection-unavailable' });
+      return;
+    }
     marked = event.target;
     stopSelection();
     paint();
-    send({ type: 'feedback:selected', context: contextFor(marked) });
+    send({ type: 'feedback:selected', context: contextFor(marked, selector) });
   };
   const onKey = (event: KeyboardEvent) => {
     if (event.key === 'Escape' && selecting) {

@@ -370,6 +370,78 @@ test('selection keeps an Astro table header cell granular through hover and comp
     .toBe('none');
 });
 
+for (const marker of ['distinct', 'duplicate', 'oversized']) {
+  test(`deep child selection saves a unique selector with ${marker} ancestor markers`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate((markerKind) => {
+      const main = document.querySelector('main');
+      if (!main) throw new Error('Main missing');
+      const child =
+        '<div><div><div><div><div><div><button type="button"><span><svg width="24" height="24" viewBox="0 0 24 24"><path d="M2 2h20v20H2z" /></svg></span></button></div></div></div></div></div></div>';
+      main.innerHTML = ['primary', 'secondary']
+        .map((name) => {
+          const markerValue =
+            markerKind === 'distinct'
+              ? name
+              : markerKind === 'duplicate'
+                ? 'shared'
+                : 'x'.repeat(710);
+          return `<section id="repeated-editor" data-feedback-id="editor-${markerValue}">${child}</section>`;
+        })
+        .join('');
+    }, marker);
+    await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+    await page.locator('main section:first-of-type path').click();
+    await frame.getByLabel('What would you like to change?').fill('Adjust this nested icon');
+    const posted = page.waitForResponse(
+      (response) => response.url().endsWith('/threads') && response.request().method() === 'POST',
+    );
+    await frame.getByRole('button', { name: 'Post feedback', exact: true }).click();
+    const result = z.object({ thread: threadSchema }).parse(await (await posted).json());
+    expect(result.thread.context.anchor.tag).toBe('path');
+    expect(
+      await page.evaluate((selector) => {
+        const matches = document.querySelectorAll(selector);
+        return (
+          matches.length === 1 &&
+          matches[0] === document.querySelector('main section:first-of-type path')
+        );
+      }, result.thread.context.anchor.selector),
+    ).toBe(true);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+  });
+}
+
+test('an unresolvable selection stays in selection mode and can recover on a containing element', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const main = document.querySelector('main');
+    if (!main) throw new Error('Main missing');
+    const child =
+      '<div>'.repeat(150) + '<button type="button">Nested control</button>' + '</div>'.repeat(150);
+    main.innerHTML = `<section>${child}</section><section>${child}</section>`;
+    main.style.padding = '24px';
+  });
+  await frame.getByRole('button', { name: 'Select an element', exact: true }).click();
+  await page.locator('main section:first-of-type button').click();
+  await expect(frame.getByRole('alert')).toHaveText(
+    'This element cannot be identified reliably. Select a containing element.',
+  );
+  await expect(frame.getByRole('button', { name: 'Cancel selection', exact: true })).toBeVisible();
+  await page.locator('main').click({ position: { x: 2, y: 2 } });
+  await expect(frame.getByLabel('What would you like to change?')).toBeVisible();
+  await expect(frame.getByRole('alert')).toBeHidden();
+});
+
 for (const target of ['#editor-title', '#editor-paragraph']) {
   test(`redacted editor target ${target} remains granular and resolves its feedback pin`, async ({
     page,

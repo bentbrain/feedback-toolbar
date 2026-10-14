@@ -319,7 +319,9 @@ test('isolated toolbar shares the service session and completes the feedback-to-
     'none',
   );
   await frame.getByText('Please increase the spacing around this iPhone button.').click();
-  await frame.getByRole('button', { name: 'React with 👍' }).click();
+  await frame.getByRole('button', { name: 'Add reaction', exact: true }).click();
+  await frame.getByRole('textbox', { name: 'Search emojis', exact: true }).fill('thumbs up');
+  await frame.getByRole('gridcell', { name: 'Thumbs up', exact: true }).click();
   await frame.getByRole('button', { name: 'Send to agent' }).click();
   await expect(frame.getByText('Queued. Waiting for the agent.')).toBeVisible();
   const data = z

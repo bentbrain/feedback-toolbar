@@ -1,8 +1,9 @@
 import type { Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import emojiData from 'emojibase-data/en/data.json' with { type: 'json' };
 import { test, expect } from './fixtures.js';
-import { projectSchema, threadSchema } from '../src/shared/models.js';
+import { emojiSchema, projectSchema, threadSchema } from '../src/shared/models.js';
 
 async function fixture(page: Page, baseURL: string | undefined, dark = false) {
   if (!baseURL) throw new Error('Missing fixture URL.');
@@ -100,6 +101,11 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
     'aria-pressed',
     'true',
   );
+  for (const emoji of ['👍', '❤️', '👀', '🎉']) {
+    await expect(
+      dialog.getByRole('button', { name: `React with ${emoji}`, exact: true }),
+    ).toHaveCount(0);
+  }
   expect(requests.filter((url) => url.includes('/emoji-data/'))).toEqual([]);
   await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
   const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
@@ -123,11 +129,11 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
   const group = dialog.getByRole('group', { name: 'Reactions', exact: true });
   await expect(group).toHaveAttribute('aria-busy', 'true');
   await expect(group.getByRole('button', { name: 'Add reaction', exact: true })).toBeDisabled();
-  await expect(group.getByRole('button', { name: 'React with 👍', exact: true })).toBeDisabled();
+  await expect(group.getByRole('button', { name: 'React with 👨‍👩‍👧‍👦', exact: true })).toBeDisabled();
   releaseReaction();
   const reaction = dialog.getByRole('button', { name: 'React with 🦋', exact: true });
   await expect(reaction).toHaveAttribute('aria-pressed', 'true');
-  await expect(reaction).toContainText('1');
+  await expect(reaction).toHaveText('🦋');
   await reaction.click();
   await expect(reaction).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Add reaction', exact: true }).click();
@@ -158,6 +164,115 @@ test('dashboard searches, selects, persists and toggles arbitrary reactions with
   expect(requests.some((url) => url.endsWith('/api/emoji-data/v1/en/messages.json'))).toBe(true);
   expect(requests.every((url) => new URL(url).origin === f.baseURL)).toBe(true);
   expect(errors).toEqual([]);
+});
+
+test('favourites learn choices, rank frequent emojis and persist across reloads', async ({
+  page,
+  baseURL,
+}) => {
+  await fixture(page, baseURL);
+  await page.goto('/');
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  const reactions = page.getByRole('group', { name: 'Reactions', exact: true });
+  const add = reactions.getByRole('button', { name: 'Add reaction', exact: true });
+  const search = page.getByRole('textbox', { name: 'Search emojis', exact: true });
+  const favourites = page.getByRole('group', { name: 'Favourite emojis', exact: true });
+  await add.click();
+  await expect(favourites).toHaveCount(0);
+  await search.fill('butterfly');
+  await page.getByRole('gridcell', { name: 'Butterfly', exact: true }).click();
+  const butterfly = reactions.getByRole('button', { name: 'React with 🦋', exact: true });
+  await expect(butterfly).toHaveAttribute('aria-pressed', 'true');
+  await butterfly.click();
+  await expect(butterfly).toHaveCount(0);
+  await add.click();
+  await favourites.getByRole('button', { name: 'React with 🦋', exact: true }).click();
+  await expect(butterfly).toHaveAttribute('aria-pressed', 'true');
+  await add.click();
+  await search.fill('rocket');
+  await page.getByRole('gridcell', { name: 'Rocket', exact: true }).click();
+  await expect(
+    reactions.getByRole('button', { name: 'React with 🚀', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await page.reload();
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  await add.click();
+  await expect(favourites.getByRole('button')).toHaveText(['🦋', '🚀']);
+  await search.press('Escape');
+  await reactions.getByRole('button', { name: 'React with 🚀', exact: true }).click();
+  await add.click();
+  // Removing a reaction does not count as another choice.
+  await expect(favourites.getByRole('button')).toHaveText(['🦋', '🚀']);
+  await favourites.getByRole('button', { name: 'React with 🚀', exact: true }).click();
+  await expect(
+    reactions.getByRole('button', { name: 'React with 🚀', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await add.click();
+  // Equally frequent choices put the most recent one first.
+  await expect(favourites.getByRole('button')).toHaveText(['🚀', '🦋']);
+});
+
+test('favourites combine choices from separate tabs without losing updates', async ({
+  page,
+  baseURL,
+}) => {
+  await fixture(page, baseURL);
+  const other = await page.context().newPage();
+  for (const tab of [page, other]) {
+    await tab.goto('/');
+    await tab.getByText('Searchable emoji feedback', { exact: true }).click();
+    await tab.getByRole('button', { name: 'Add reaction', exact: true }).click();
+    await expect(tab.getByRole('group', { name: 'Favourite emojis', exact: true })).toHaveCount(0);
+  }
+  await page.getByRole('textbox', { name: 'Search emojis', exact: true }).fill('butterfly');
+  await other.getByRole('textbox', { name: 'Search emojis', exact: true }).fill('rocket');
+  await Promise.all([
+    page.getByRole('gridcell', { name: 'Butterfly', exact: true }).click(),
+    other.getByRole('gridcell', { name: 'Rocket', exact: true }).click(),
+  ]);
+  for (const tab of [page, other]) {
+    const add = tab.getByRole('button', { name: 'Add reaction', exact: true });
+    await expect(add).toBeEnabled();
+    await add.click();
+    const favourites = tab.getByRole('group', { name: 'Favourite emojis', exact: true });
+    await expect(
+      favourites.getByRole('button', { name: 'React with 🦋', exact: true }),
+    ).toBeVisible();
+    await expect(
+      favourites.getByRole('button', { name: 'React with 🚀', exact: true }),
+    ).toBeVisible();
+  }
+  await other.close();
+});
+
+test('frequent favourites survive more than 32 distinct choices', async ({ page, baseURL }) => {
+  const f = await fixture(page, baseURL);
+  const actorId = f.thread.messages[0]?.actorId;
+  if (!actorId) throw new Error('Missing fixture actor.');
+  await page.goto('/');
+  const history = emojiData
+    .filter((entry) => entry.group !== undefined && emojiSchema.safeParse(entry.emoji).success)
+    .filter((entry) => !['🦋', '🚀'].includes(entry.emoji))
+    .slice(0, 31)
+    .map(({ emoji }) => ({ emoji, count: 1 }));
+  history.push({ emoji: '🦋', count: 20 });
+  await page.evaluate(
+    ({ actorId, history }) => {
+      localStorage.setItem(`feedback-emoji-favourites-v1:${actorId}`, JSON.stringify(history));
+    },
+    { actorId, history },
+  );
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  const add = page.getByRole('button', { name: 'Add reaction', exact: true });
+  await add.click();
+  await page.getByRole('textbox', { name: 'Search emojis', exact: true }).fill('rocket');
+  await page.getByRole('gridcell', { name: 'Rocket', exact: true }).click();
+  await expect(add).toBeEnabled();
+  await page.reload();
+  await page.getByText('Searchable emoji feedback', { exact: true }).click();
+  await add.click();
+  const favourites = page.getByRole('group', { name: 'Favourite emojis', exact: true });
+  await expect(favourites.getByRole('button').first()).toHaveText('🦋');
 });
 
 test('mobile dark toolbar picker fits its iframe, inherits theme and isolates host styles', async ({

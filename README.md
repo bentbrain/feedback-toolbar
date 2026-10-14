@@ -96,7 +96,7 @@ Claims are exclusive per project and tied to a leased credential. Revocation, ca
 
 The default appearance follows the bent.build identity: bundled Geist Mono, cobalt blue, white or black backgrounds, and square controls. Custom project accents and other corner styles remain available. Project owners configure light, dark, or system mode; accent color; corner radius; density; and toolbar placement. The same tokens apply to the toolbar and its dialogs. Validated overrides are also available in `mountFeedback({ theme: ... })` or script attributes such as `data-accent`, `data-mode`, and `data-placement`.
 
-System mode follows the website window's color preference, including live changes. Explicit project or embed modes take precedence. The emoji picker loads its dataset from the feedback service when opened. Its Emojibase license is available at `/api/emoji-data/v1/en/license.txt`.
+System mode follows the website window's color preference, including live changes. Explicit project or embed modes take precedence. The emoji picker loads its dataset from the feedback service when opened. Its favourites row learns each user's choices and shows up to eight frequently used emojis, with choices saved in the browser. Messages show only reactions that have been added. The dataset's Emojibase license is available at `/api/emoji-data/v1/en/license.txt`.
 
 ## Development and self-hosting
 

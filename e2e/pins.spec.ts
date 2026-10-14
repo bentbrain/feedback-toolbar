@@ -266,6 +266,155 @@ test('toggle renders isolated accessible pins and click or keyboard opens the ma
   await expect.poll(async () => (await pins(page)).length).toBe(0);
 });
 
+test('Japan header and decorative beer SVG pins use their own viewport anchors', async ({
+  page,
+}) => {
+  await instrument(page);
+  await page.setViewportSize({ width: 1778, height: 1024 });
+  const project = await createProject(page);
+  for (const anchor of [
+    {
+      selector: 'body > header',
+      tag: 'header',
+      rect: { x: 0, y: 0, width: 1778, height: 55 },
+    },
+    {
+      selector: 'body > header > div > svg',
+      tag: 'svg',
+      rect: { x: 1670.3046875, y: 15.953125, width: 22.09375, height: 22.09375 },
+    },
+  ]) {
+    const response = await page.request.post(`/api/projects/${project.id}/threads`, {
+      data: {
+        body: `${anchor.tag} feedback`,
+        context: {
+          url: `${website}/`,
+          viewport: { width: 1778, height: 1024 },
+          deployment: null,
+          anchor: { ...anchor, feedbackId: null, text: '', label: '' },
+        },
+      },
+    });
+    expect(response.status()).toBe(201);
+  }
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    document.querySelector('.demo-notice')?.remove();
+    const header = document.querySelector('body > header');
+    if (!(header instanceof HTMLElement)) throw new Error('Header missing');
+    header.style.cssText =
+      'height:55px;padding:0;border:0;border-bottom:1px solid;display:flex;align-items:center;justify-content:space-between';
+    const brand = document.createElement('a');
+    brand.textContent = 'jp.bent.build';
+    const nav = document.createElement('nav');
+    nav.textContent = 'journal gallery';
+    const beer = document.createElement('div');
+    beer.dataset.feedbackId = 'beer-counter';
+    beer.style.cssText = 'display:flex;align-items:center;gap:7px;margin-right:24px';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.style.cssText = 'width:22.09375px;height:22.09375px';
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M2 2h10v12H2z');
+    svg.append(path);
+    const label = document.createElement('span');
+    label.textContent = '0 beers';
+    label.style.cssText = 'width:54.609375px;flex-shrink:0';
+    beer.append(svg, label);
+    header.replaceChildren(brand, nav, beer);
+  });
+  expect(await page.locator('body > header').boundingBox()).toEqual({
+    x: 0,
+    y: 0,
+    width: 1778,
+    height: 55,
+  });
+  expect(await page.locator('body > header > div > svg').boundingBox()).toEqual({
+    x: expect.closeTo(1670.3046875, 1),
+    y: 15.953125,
+    width: 22.09375,
+    height: 22.09375,
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(2);
+  const visible = await pins(page);
+  expect(visible.find((pin) => pin.text === '1')?.x).toBeCloseTo(1670.3046875, 1);
+  expect(visible.find((pin) => pin.text === '1')?.y).toBeCloseTo(15.953125, 1);
+  expect(visible.find((pin) => pin.text === '2')).toMatchObject({ x: 8, y: 8 });
+  await clickPin(page, 1);
+  await expect(frame.getByText('svg feedback', { exact: true })).toBeVisible();
+  expect((await pins(page)).find((pin) => pin.text === '1')?.x).toBeCloseTo(1670.3046875, 1);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect
+    .poll(async () => (await pins(page)).find((pin) => pin.text === '1')?.x)
+    .toBeCloseTo(1172.3046875, 1);
+  await frame.getByRole('switch', { name: 'Hide feedback pins', exact: true }).click();
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+  await page.locator('body > header > div > svg').click({ position: { x: 20, y: 20 } });
+  await expect(
+    frame.getByText('[data-feedback-id="beer-counter"] > svg', { exact: true }),
+  ).toBeVisible();
+});
+
+test('pins on distinct adjacent anchors stay separate and keyboard accessible after reflow', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#adjacent-first', 'First adjacent feedback');
+  await createThread(page, project.id, '#adjacent-second', 'Second adjacent feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    for (const [index, id] of ['adjacent-first', 'adjacent-second'].entries()) {
+      const anchor = document.createElement('div');
+      anchor.id = id;
+      anchor.style.cssText = `position:fixed;left:${8 + index * 10}px;top:8px;width:22px;height:22px`;
+      document.body.append(anchor);
+    }
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(2);
+  const separated = async () => {
+    const [first, second] = await pins(page);
+    if (!first || !second) return false;
+    return (
+      first.x + first.width + 4 <= second.x ||
+      second.x + second.width + 4 <= first.x ||
+      first.y + first.height + 4 <= second.y ||
+      second.y + second.height + 4 <= first.y
+    );
+  };
+  await expect.poll(separated).toBe(true);
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await frame.getByRole('button', { name: 'Sign out', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect.poll(async () => (await pins(page)).find((pin) => pin.focused)?.text).toBe('1');
+  await page.locator('#adjacent-second').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) anchor.style.left = '8px';
+  });
+  await expect.poll(separated).toBe(true);
+  expect((await pins(page)).find((pin) => pin.focused)?.text).toBe('1');
+  await page.evaluate(() => {
+    for (const [index, id] of ['adjacent-first', 'adjacent-second'].entries()) {
+      const anchor = document.getElementById(id);
+      if (!(anchor instanceof HTMLElement)) throw new Error('Adjacent anchor missing');
+      anchor.style.left = `${1220 + index * 10}px`;
+      anchor.style.width = '50px';
+    }
+  });
+  await expect.poll(async () => (await pins(page)).find((pin) => pin.text === '1')?.x).toBe(1230);
+  await expect.poll(async () => (await pins(page)).length).toBe(2);
+  await expect.poll(separated).toBe(true);
+  expect((await pins(page)).find((pin) => pin.focused)?.text).toBe('1');
+  await page.keyboard.press('Enter');
+  await expect(frame.getByText('Second adjacent feedback', { exact: true })).toBeVisible();
+  await frame.getByRole('button', { name: 'Minimize toolbar' }).click();
+  await clickPin(page, 2);
+  await expect(frame.getByText('First adjacent feedback', { exact: true })).toBeVisible();
+});
+
 test('pins follow scroll, reflow and resize, reject missing, duplicate and private anchors, and reset on navigation', async ({
   page,
 }) => {

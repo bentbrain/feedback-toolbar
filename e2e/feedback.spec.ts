@@ -84,7 +84,11 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   });
   expect(account.status()).toBe(200);
   const created = await page.request.post('/api/projects', {
-    data: { name: 'Toolbar test', origins: ['http://localhost:44321'] },
+    data: {
+      name: 'Toolbar test',
+      origins: ['http://localhost:44321'],
+      theme: { mode: 'dark', accent: '#788468', radius: 'square' },
+    },
   });
   const project = z.object({ project: projectSchema }).parse(await created.json()).project;
   await page.goto(`http://localhost:44321/?project=${project.id}`);
@@ -95,6 +99,9 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   if (!frame) throw new Error('Toolbar frame missing.');
   await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
   await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
+  await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
+  await expect(frame.locator('html')).toHaveCSS('--primary', '#788468');
+  await expect(frame.locator('html')).toHaveCSS('--radius', '3px');
   const popupPromise = page.waitForEvent('popup');
   await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
   const popup = await popupPromise;
@@ -218,6 +225,24 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   expect(inaccessible).toBe(true);
   await frame.getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
+  await frame.evaluate((projectId) => {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: 'http://localhost:44321',
+        source: window.parent,
+        data: {
+          type: 'feedback:configure',
+          projectId,
+          theme: { accent: '#4065ab' },
+          url: 'http://localhost:44321/',
+          viewport: { width: innerWidth, height: innerHeight },
+        },
+      }),
+    );
+  }, project.id);
+  await expect(frame.locator('html')).toHaveCSS('--primary', '#4065ab');
+  await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
+  await expect(frame.locator('html')).toHaveCSS('--radius', '3px');
   expect(errors).toEqual([]);
 });
 

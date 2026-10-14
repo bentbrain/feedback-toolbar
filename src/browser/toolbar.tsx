@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CSPProvider } from '@base-ui/react/csp-provider';
-import { ArrowLeft, ArrowUpRight, MessageCircle, Plus, Target, X, Loader2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  MessageCircle,
+  Plus,
+  Target,
+  X,
+  Loader2,
+  MapPin,
+} from 'lucide-react';
 import { z } from 'zod';
 import { toast } from 'sonner';
 import {
@@ -25,6 +34,7 @@ import { Toaster } from './components/ui/sonner.js';
 import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
 import type { Work } from './components/common.js';
 import { ConnectionError, deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
+import { boundedMessage, maxPins } from './pin-protocol.js';
 
 const parameters = new URLSearchParams(location.search);
 const projectId = parameters.get('project') ?? '';
@@ -34,6 +44,16 @@ const embedHeaders = { 'x-feedback-project': projectId, 'x-feedback-origin': par
 const send = (data: unknown) => {
   parent.postMessage(data, parentOrigin);
 };
+function applyToolbarTheme(theme: Theme) {
+  applyTheme(theme);
+  send({
+    type: 'feedback:theme',
+    accent: document.documentElement.style.getPropertyValue('--primary').trim(),
+    placement: theme.placement,
+    mode: document.documentElement.dataset.mode,
+    radius: theme.radius,
+  });
+}
 const publicProjectSchema = z.object({ name: z.string(), theme: themeSchema });
 const themeOverridesSchema = z
   .object({
@@ -51,9 +71,11 @@ const connectionStore = createConnectionStore(
 function Toolbar() {
   const [expanded, setExpanded] = useState(false);
   const [mini, setMini] = useState(false);
+  const [showPins, setShowPins] = useState(false);
   const [connection, setAuth] = useState(connectionStore.read);
   const [sessionUser, setSessionUser] = useState<z.infer<typeof publicUserSchema> | null>(null);
   const [verified, setVerified] = useState(false);
+  const [verifiedUserId, setVerifiedUserId] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(connectRequested);
   const [cookieStatus, setCookieStatus] = useState<
     'checking' | 'available' | 'unavailable' | 'blocked'
@@ -172,6 +194,7 @@ function Toolbar() {
       .projects.find((item) => item.id === projectId);
     setRole(own?.role ?? 'viewer');
     setVerified(Boolean(own));
+    setVerifiedUserId(own ? (auth.user?.id ?? null) : null);
     if (own) {
       setTheme(own.theme);
       setConnecting(false);
@@ -219,6 +242,7 @@ function Toolbar() {
   useEffect(() => {
     send({ type: 'feedback:visibility', visible: Boolean(auth && verified) || connecting });
     if (!auth) {
+      setShowPins(false);
       setVerified(false);
       send({ type: 'feedback:clear' });
     }
@@ -240,17 +264,12 @@ function Toolbar() {
       });
   }, []);
   useEffect(() => {
-    applyTheme(resolvedTheme);
-    send({
-      type: 'feedback:theme',
-      accent: resolvedTheme.accent,
-      placement: resolvedTheme.placement,
-    });
+    applyToolbarTheme(resolvedTheme);
   }, [resolvedTheme]);
   useEffect(() => {
     const media = matchMedia('(prefers-color-scheme: dark)');
     const update = () => {
-      applyTheme(resolvedTheme);
+      applyToolbarTheme(resolvedTheme);
     };
     media.addEventListener('change', update);
     return () => {
@@ -260,7 +279,7 @@ function Toolbar() {
   useEffect(() => {
     send({
       type: 'feedback:resize',
-      width: expanded ? 382 : mini ? 56 : 248,
+      width: expanded ? 382 : mini ? 56 : 280,
       height: expanded ? 636 : 56,
     });
   }, [expanded, mini]);
@@ -291,17 +310,37 @@ function Toolbar() {
     };
   }, [auth, refresh]);
   const receive = useEffectEvent((event: MessageEvent<unknown>) => {
+    if (!boundedMessage(event.data)) return;
     const result = z
       .object({
-        type: z.string(),
+        type: z.string().max(60),
         theme: themeOverridesSchema.optional(),
-        url: z.string().optional(),
+        url: z.string().max(1500).optional(),
+        threadId: z
+          .string()
+          .regex(/^[\w-]{1,120}$/)
+          .optional(),
         context: contextSchema.optional(),
         found: z.boolean().optional(),
       })
       .safeParse(event.data);
     if (!result.success) return;
     const data = result.data;
+    if (data.type === 'feedback:open-thread' && pinsAuthorized && showPins && data.url === page) {
+      const thread = threads.find(
+        (thread) =>
+          thread.id === data.threadId && thread.context.url === page && thread.status === 'open',
+      );
+      if (!thread) return;
+      setActiveDetail(null);
+      setActiveId(thread.id);
+      setScreen('thread');
+      setExpanded(true);
+      setDraft('');
+      setContext(null);
+      setError('');
+      send({ type: 'feedback:clear' });
+    }
     if (data.type === 'feedback:connect' && !auth) setConnecting(true);
     if (data.type === 'feedback:configure') {
       version.current++;
@@ -309,6 +348,7 @@ function Toolbar() {
       setActiveDetail(null);
       setOverrides(data.theme ?? {});
       setPage(data.url ?? '');
+      setShowPins(false);
       loadedPages.current = false;
       setNextBefore(null);
       setThreads([]);
@@ -318,6 +358,7 @@ function Toolbar() {
       cachedThreads.current = [];
       setActiveDetail(null);
       setPage(data.url ?? '');
+      setShowPins(false);
       loadedPages.current = false;
       setNextBefore(null);
       setThreads([]);
@@ -466,8 +507,44 @@ function Toolbar() {
       back();
     }
   };
+  const pinsAuthorized = Boolean(auth?.user && verified && auth.user.id === verifiedUserId);
   const pageThreads = threads.filter(
     (thread) => thread.context.url === page && thread.status === 'open',
+  );
+  useEffect(() => {
+    send({
+      type: 'feedback:pins',
+      url: page,
+      items:
+        pinsAuthorized && showPins
+          ? threads
+              .filter(
+                (thread) =>
+                  thread.context.url === page &&
+                  thread.status === 'open' &&
+                  thread.context.anchor.selector.length > 0,
+              )
+              .slice(0, maxPins)
+              .map((thread) => ({ threadId: thread.id, selector: thread.context.anchor.selector }))
+          : [],
+    });
+    if (!pinsAuthorized) setShowPins(false);
+  }, [pinsAuthorized, showPins, threads, page]);
+  const pinsToggle = (
+    <Button
+      variant={showPins ? 'secondary' : 'ghost'}
+      size="icon-sm"
+      aria-label={showPins ? 'Hide feedback pins' : 'Show feedback pins'}
+      role="switch"
+      aria-checked={showPins}
+      title={`Pins for up to ${maxPins} loaded feedback threads`}
+      disabled={!pinsAuthorized}
+      onClick={() => {
+        setShowPins((current) => !current);
+      }}
+    >
+      <MapPin className="size-4" />
+    </Button>
   );
   const sendWork = async (thread: Thread) => {
     await api(`/api/threads/${thread.id}/work`, {
@@ -509,6 +586,7 @@ function Toolbar() {
                 </Badge>
               </Button>
               <span className="h-4 border-l" />
+              {pinsToggle}
               <IconAction label="Select an element" onClick={select}>
                 <Target className="size-4" />
               </IconAction>
@@ -541,9 +619,12 @@ function Toolbar() {
                 </p>
               </div>
             </div>
-            <IconAction label="Minimize toolbar" onClick={collapse}>
-              <X className="size-4" />
-            </IconAction>
+            <div className="flex items-center gap-1">
+              {pinsToggle}
+              <IconAction label="Minimize toolbar" onClick={collapse}>
+                <X className="size-4" />
+              </IconAction>
+            </div>
           </header>
           {error ? (
             <p

@@ -39,6 +39,7 @@
     "knip": "knip --no-progress",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
+    "test:e2e:pins": "playwright test --config=e2e/pins.config.ts",
     "worker:check": "wrangler deploy --dry-run",
     "db:migrate": "wrangler d1 migrations apply feedback-toolbar --remote",
     "deploy:worker": "wrangler deploy",

@@ -1,3 +1,6 @@
+import { createHostPins, publicAnchor } from './host-pins.js';
+import { boundedMessage, feedbackPins } from './pin-protocol.js';
+
 export interface FeedbackOptions {
   server: string;
   projectId: string;
@@ -80,6 +83,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     border: '0',
     transform: 'none',
     isolation: 'isolate',
+    overflow: 'visible',
   };
   for (const [key, value] of Object.entries(critical))
     host.style.setProperty(key, value, 'important');
@@ -92,7 +96,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   );
   frame.referrerPolicy = 'no-referrer';
   frame.style.cssText =
-    'display:block;width:100%;height:100%;border:0;background:transparent;color-scheme:normal;';
+    'display:block;position:relative;z-index:2;width:100%;height:100%;border:0;background:transparent;color-scheme:normal;';
   const frameUrl = new URL('/toolbar', service);
   frameUrl.searchParams.set('project', options.projectId);
   frameUrl.searchParams.set('origin', location.origin);
@@ -111,6 +115,20 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   let marked: Element | null = null;
   let placement = options.theme?.placement ?? 'bottom-right';
   const send = (data: unknown) => frame.contentWindow?.postMessage(data, service.origin);
+  const pageUrl = () => `${location.origin}${location.pathname}`;
+  let pinsPage = '';
+  let visible = false;
+  const pins = createHostPins(shadow, (threadId) => {
+    if (!visible || pinsPage !== pageUrl()) return;
+    stopSelection();
+    marked = null;
+    paint();
+    send({ type: 'feedback:open-thread', threadId, url: pinsPage });
+  });
+  const clearPins = () => {
+    pinsPage = '';
+    pins.update([]);
+  };
   const resize = (width: number, height: number) => {
     host.style.setProperty('width', `${Math.min(width, innerWidth - 24)}px`, 'important');
     host.style.setProperty('height', `${Math.min(height, innerHeight - 36)}px`, 'important');
@@ -187,13 +205,23 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     if (
       event.origin !== service.origin ||
       event.source !== frame.contentWindow ||
-      !record(event.data)
+      !record(event.data) ||
+      !boundedMessage(event.data)
     )
       return;
     const data = event.data;
+    if (feedbackPins(data)) {
+      if (visible && data.url === pageUrl()) {
+        pinsPage = data.url;
+        pins.update(data.items);
+      }
+      return;
+    }
     if (data.type === 'feedback:visibility' && typeof data.visible === 'boolean') {
+      visible = data.visible;
       host.style.setProperty('display', data.visible ? 'block' : 'none', 'important');
       if (!data.visible) {
+        clearPins();
         stopSelection();
         marked = null;
         paint();
@@ -204,7 +232,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
         type: 'feedback:configure',
         projectId: options.projectId,
         theme: options.theme ?? {},
-        url: `${location.origin}${location.pathname}`,
+        url: pageUrl(),
         viewport: { width: innerWidth, height: innerHeight },
       });
     if (
@@ -227,6 +255,11 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     ) {
       highlight.style.borderColor = data.accent;
       highlight.style.background = `${data.accent}14`;
+      if (
+        (data.mode === 'light' || data.mode === 'dark') &&
+        (data.radius === 'square' || data.radius === 'soft' || data.radius === 'round')
+      )
+        pins.theme(data.accent, data.mode, data.radius);
       if (data.placement === 'bottom-left' || data.placement === 'bottom-right') {
         placement = data.placement;
         resize(size.width, size.height);
@@ -247,8 +280,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
       data.selector.length <= 700
     ) {
       try {
-        const matches = document.querySelectorAll(data.selector);
-        marked = matches.length === 1 ? matches.item(0) : null;
+        marked = publicAnchor(data.selector);
         if (marked) marked.scrollIntoView({ block: 'center', behavior: 'smooth' });
         paint();
         send({ type: 'feedback:anchor-status', found: marked !== null });
@@ -264,12 +296,20 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     }
     resize(size.width, size.height);
     paint();
-    send({
-      type: 'feedback:navigation',
-      url: `${location.origin}${location.pathname}`,
-      viewport: { width: innerWidth, height: innerHeight },
-    });
+    if (pinsPage && pinsPage !== pageUrl()) clearPins();
+    if (previousPage !== pageUrl()) {
+      previousPage = pageUrl();
+      stopSelection();
+      marked = null;
+      paint();
+      send({
+        type: 'feedback:navigation',
+        url: pageUrl(),
+        viewport: { width: innerWidth, height: innerHeight },
+      });
+    }
   };
+  let previousPage = pageUrl();
   let previousUrl = location.href;
   const navigation = setInterval(() => {
     if (previousUrl !== location.href) {
@@ -286,6 +326,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   return {
     destroy() {
       clearInterval(navigation);
+      pins.destroy();
       stopSelection();
       host.remove();
       window.removeEventListener('message', onMessage);

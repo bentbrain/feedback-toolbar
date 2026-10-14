@@ -37,6 +37,8 @@ The package has not been released to npm yet. Build from this repository or inst
 
 Add `data-feedback-id="hero-cta"` to important elements to keep anchors stable across deployments. The selector, bounded element text, viewport, URL, and deployment reference accompany the comment. The loader excludes form values, editable content including inherited editing contexts, and elements marked `data-feedback-private`; the service strips URL queries and fragments.
 
+Toggle pins to show up to 256 loaded, open threads on the current page. Click a pin to open its conversation. Pins skip private, missing, ambiguous, or hidden elements. **Add reaction** opens a searchable Unicode emoji picker with skin tones; reactions also support flags and joined emoji sequences.
+
 ## Agent-assisted setup
 
 Requires Node 24 or newer and Bun 1.3.14. Use WSL on Windows for the CLI's secure file operations.
@@ -91,6 +93,8 @@ Claims are exclusive per project and tied to a leased credential. Revocation, ca
 ## Appearance
 
 The default appearance follows the bent.build identity: bundled Geist Mono, cobalt blue, white or black backgrounds, and square controls. Custom project accents and other corner styles remain available. Project owners configure light, dark, or system mode; accent color; corner radius; density; and toolbar placement. The same tokens apply to the toolbar and its dialogs. Validated overrides are also available in `mountFeedback({ theme: ... })` or script attributes such as `data-accent`, `data-mode`, and `data-placement`.
+
+System mode follows the website window's color preference, including live changes. Explicit project or embed modes take precedence. The emoji picker loads its dataset from the feedback service when opened. Its Emojibase license is available at `/api/emoji-data/v1/en/license.txt`.
 
 ## Development and self-hosting
 

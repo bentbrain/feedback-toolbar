@@ -1321,7 +1321,7 @@ function Dashboard({
     <>
       <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[224px_minmax(0,1fr)]">
         <aside className="flex min-w-0 flex-col gap-6 border-b bg-card p-5 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:py-7">
-          <Brand />
+          <Brand small />
           <div className="rounded-lg border bg-muted/30 p-3">
             <Choice
               label="Project"

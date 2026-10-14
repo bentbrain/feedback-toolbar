@@ -12,6 +12,10 @@ test('new user creates a project, customizes its theme, and gets the installatio
   await page.getByLabel('Email address').fill(`${randomUUID()}@example.invalid`);
   await page.getByLabel('Password', { exact: true }).fill(randomUUID());
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await page.getByRole('button', { name: 'Account security', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Your account security' })).toBeVisible();
+  await expect(page.getByText('No connected tools or websites.')).toBeVisible();
+  await page.getByRole('button', { name: 'Feedback', exact: true }).click();
   await page.getByRole('button', { name: 'Create your first project' }).click();
   await page.getByLabel('Project name').fill('Forma website');
   await page.getByRole('button', { name: 'Create project', exact: true }).click();
@@ -41,14 +45,14 @@ test('isolated toolbar authenticates independently and completes the feedback-to
     if (message.type() === 'error' && message.text().includes('Content Security Policy'))
       errors.push(message.text());
   });
-  const account = await page.request.post('/api/auth/signup', {
+  const account = await page.request.post('/api/auth/sign-up/email', {
     data: {
       name: 'Taylor Review',
       email: `${randomUUID()}@example.invalid`,
       password: randomUUID(),
     },
   });
-  expect(account.status()).toBe(201);
+  expect(account.status()).toBe(200);
   const created = await page.request.post('/api/projects', {
     data: { name: 'Toolbar test', origins: ['http://localhost:44321'] },
   });
@@ -64,11 +68,13 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   const popupPromise = page.waitForEvent('popup');
   await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
   const popup = await popupPromise;
-  await popup.waitForURL(/\/auth\?grant=/);
+  await popup.waitForURL(/\/auth\?user_code=/);
   await popup.getByRole('button', { name: 'Approve connection' }).click();
   await expect(popup.getByText('Connection approved.')).toBeVisible();
   await popup.close();
-  await expect(frame.getByRole('button', { name: 'New feedback' })).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'New feedback' })).toBeVisible({
+    timeout: 15_000,
+  });
   await frame.getByRole('button', { name: 'New feedback' }).click();
   await page.locator('[data-feedback-id=hero-button]').click();
   await frame
@@ -91,7 +97,12 @@ test('isolated toolbar authenticates independently and completes the feedback-to
     .object({ threads: z.array(threadSchema) })
     .parse(await (await page.request.get(`/api/projects/${project.id}/threads`)).json());
   expect(data.threads[0]?.context.anchor.feedbackId).toBe('hero-button');
-  expect(data.threads[0]?.messages[0]?.reactions.length).toBe(1);
+  const preview = data.threads[0];
+  if (!preview) throw new Error('Expected the created thread preview.');
+  const detail = z
+    .object({ thread: threadSchema })
+    .parse(await (await page.request.get(`/api/threads/${preview.id}`)).json());
+  expect(detail.thread.messages[0]?.reactions.length).toBe(1);
   const auth = z.object({ token: z.string() }).parse(
     await (
       await page.request.post(`/api/projects/${project.id}/credentials`, {

@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
@@ -9,6 +9,7 @@ import { bindingKey, client, publicConfig, saveCredential, storedCredentials } f
 import { installHtml } from './install.js';
 import { runWorker } from './worker.js';
 import { replaceFile } from '../shared/files.js';
+import { deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
 
 const parsed = parseArgs({
   allowPositionals: true,
@@ -39,18 +40,22 @@ const output = (value: unknown) => {
 };
 async function login() {
   const server = originSchema.parse(options.server ?? 'http://localhost:4310');
-  const verifier = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
-  const proof = createHash('sha256').update(verifier).digest('base64url');
-  const response = await fetch(`${server}/api/auth/grants`, {
+  const response = await fetch(`${server}/api/connections/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'personal', challenge: proof }),
+    body: JSON.stringify({ kind: 'personal', projectId: null, parentOrigin: null }),
     redirect: 'error',
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`Could not start login (${response.status}).`);
-  const grant = z.object({ id: z.string(), loginUrl: z.string() }).parse(await response.json());
-  console.error(`Approve this local connection in your browser:\n${grant.loginUrl}`);
+  const grant = deviceConnectionSchema.parse(await response.json());
+  const destination = new URL(grant.verification_uri_complete);
+  if (destination.origin !== server || destination.pathname !== '/auth')
+    throw new Error('Invalid approval URL.');
+  const loginUrl = destination.href;
+  console.error(
+    `Approve this local connection in your browser:\n${loginUrl}\nConfirm approval code: ${grant.user_code}`,
+  );
   if (!options['no-open']) {
     const executable =
       process.platform === 'darwin'
@@ -59,32 +64,25 @@ async function login() {
           ? 'rundll32'
           : 'xdg-open';
     const args =
-      process.platform === 'win32'
-        ? ['url.dll,FileProtocolHandler', grant.loginUrl]
-        : [grant.loginUrl];
+      process.platform === 'win32' ? ['url.dll,FileProtocolHandler', loginUrl] : [loginUrl];
     spawn(executable, args, { stdio: 'ignore' }).on('error', () => {
       console.error('Open the authorization URL above manually.');
     });
   }
-  const deadline = Date.now() + 10 * 60_000;
+  const deadline = Date.now() + grant.expires_in * 1000;
+  let interval = grant.interval;
   while (Date.now() < deadline) {
-    const exchange = await fetch(`${server}/api/auth/exchange`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: grant.id, verifier }),
-      redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
+    await setTimeout(interval * 1000);
+    const result = await exchangeConnection(server, grant.clientId, {
+      deviceCode: grant.device_code,
     });
-    if (exchange.status === 202) {
-      await setTimeout(1500);
+    if (result.pending) {
+      if (result.slowDown) interval += 5;
       continue;
     }
-    if (!exchange.ok) throw new Error('Authorization failed or expired. Run login again.');
-    const auth = z
-      .object({ token: z.string(), expiresAt: z.number() })
-      .parse(await exchange.json());
-    await saveCredential(server, auth);
-    output({ ok: true, server, expiresAt: auth.expiresAt });
+    if (!result.connection) throw new Error('Authorization failed.');
+    await saveCredential(server, result.connection);
+    output({ ok: true, server, expiresAt: result.connection.expiresAt });
     return;
   }
   throw new Error('Login expired. Run login again.');

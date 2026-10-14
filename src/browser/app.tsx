@@ -23,6 +23,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { z } from 'zod';
+import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   defaultTheme,
@@ -80,15 +81,16 @@ const agentListSchema = z.array(
 );
 type Account = z.infer<typeof publicUserSchema>;
 type ProjectWithRole = z.infer<typeof projectListSchema>[number];
-type View = 'feedback' | 'install' | 'appearance' | 'people' | 'agents';
-const navigation = [
+type View = 'feedback' | 'install' | 'appearance' | 'people' | 'agents' | 'account';
+const navigation: { id: View; label: string; icon: LucideIcon }[] = [
   { id: 'feedback', label: 'Feedback', icon: MessageCircle },
   { id: 'install', label: 'Installation', icon: Code2 },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'people', label: 'People', icon: Users },
   { id: 'agents', label: 'Agents', icon: Bot },
+  { id: 'account', label: 'Account security', icon: ShieldCheck },
 ];
-const grant = new URLSearchParams(location.search).get('grant');
+const grant = new URLSearchParams(location.search).get('user_code');
 
 function Field({
   label,
@@ -114,13 +116,21 @@ function Field({
 function Auth({
   onSignIn,
   allowSignup,
+  github,
+  localPassword,
 }: {
   onSignIn: (user: Account) => void;
   allowSignup: boolean;
+  github: boolean;
+  localPassword: boolean;
 }) {
   const [signup, setSignup] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(
+    new URLSearchParams(location.search).has('error')
+      ? 'GitHub sign-in could not complete. Try again or contact the service owner.'
+      : '',
+  );
   async function submit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -133,7 +143,7 @@ function Auth({
         ...(signup ? { name: formInput(form, 'name') } : {}),
       };
       const result = z.object({ user: publicUserSchema }).parse(
-        await request(`/api/auth/${signup ? 'signup' : 'login'}`, {
+        await request(`/api/auth/${signup ? 'sign-up/email' : 'sign-in/email'}`, {
           method: 'POST',
           body: input,
         }),
@@ -181,55 +191,88 @@ function Auth({
                   : 'Sign in to your projects and conversations.'}
             </p>
           </div>
-          <div className="grid gap-5">
-            {signup ? (
-              <Field label="Your name" id="name">
+          {github ? (
+            <Button
+              type="button"
+              className="h-10"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void request('/api/auth/sign-in/social', {
+                  method: 'POST',
+                  body: { provider: 'github', callbackURL: location.href },
+                })
+                  .then((data) => {
+                    const response = z.object({ url: z.url() }).parse(data);
+                    const destination = new URL(response.url);
+                    if (destination.origin !== 'https://github.com')
+                      throw new Error('Invalid GitHub sign-in URL.');
+                    location.assign(destination.href);
+                  })
+                  .catch((failure: unknown) => {
+                    setError(messageOf(failure));
+                    setBusy(false);
+                  });
+              }}
+            >
+              Continue with GitHub <ArrowUpRight />
+            </Button>
+          ) : null}
+          {localPassword ? (
+            <div className="grid gap-5">
+              {signup ? (
+                <Field label="Your name" id="name">
+                  <Input
+                    id="name"
+                    name="name"
+                    placeholder="Alex Morgan"
+                    autoComplete="name"
+                    maxLength={60}
+                    required
+                    className="h-10"
+                  />
+                </Field>
+              ) : null}
+              <Field label="Email address" id="email">
                 <Input
-                  id="name"
-                  name="name"
-                  placeholder="Alex Morgan"
-                  autoComplete="name"
-                  maxLength={60}
+                  id="email"
+                  name="email"
+                  type="email"
+                  placeholder="you@example.com"
+                  autoComplete="email"
                   required
                   className="h-10"
                 />
               </Field>
-            ) : null}
-            <Field label="Email address" id="email">
-              <Input
-                id="email"
-                name="email"
-                type="email"
-                placeholder="you@example.com"
-                autoComplete="email"
-                required
-                className="h-10"
-              />
-            </Field>
-            <Field label="Password" id="password" hint="At least 12 characters.">
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="Your password"
-                autoComplete={signup ? 'new-password' : 'current-password'}
-                minLength={12}
-                maxLength={200}
-                required
-                className="h-10"
-              />
-            </Field>
-            {error ? (
-              <p role="alert" className="text-xs leading-5 text-destructive">
-                {error}
-              </p>
-            ) : null}
-            <Button type="submit" className="h-10" disabled={busy}>
-              {busy ? <Loader2 className="animate-spin" /> : null}
-              {signup ? 'Create account' : 'Sign in'}
-              <ArrowUpRight />
-            </Button>
-          </div>
+              <Field label="Password" id="password" hint="At least 12 characters.">
+                <Input
+                  id="password"
+                  name="password"
+                  type="password"
+                  placeholder="Your password"
+                  autoComplete={signup ? 'new-password' : 'current-password'}
+                  minLength={12}
+                  maxLength={200}
+                  required
+                  className="h-10"
+                />
+              </Field>
+              {error ? (
+                <p role="alert" className="text-xs leading-5 text-destructive">
+                  {error}
+                </p>
+              ) : null}
+              <Button type="submit" className="h-10" disabled={busy}>
+                {busy ? <Loader2 className="animate-spin" /> : null}
+                {signup ? 'Create account' : 'Sign in'}
+                <ArrowUpRight />
+              </Button>
+            </div>
+          ) : error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          ) : null}
           {allowSignup ? (
             <div className="text-center text-xs text-muted-foreground">
               {signup ? 'Already have an account?' : 'New to Feedback?'}{' '}
@@ -261,7 +304,9 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
   const load = useCallback(async () => {
     try {
       setInfo(
-        consentSchema.parse(await request(`/api/auth/grants/${encodeURIComponent(grant ?? '')}`)),
+        consentSchema.parse(
+          await request(`/api/connections/approval?code=${encodeURIComponent(grant ?? '')}`),
+        ),
       );
     } catch (failure) {
       setError(messageOf(failure));
@@ -277,11 +322,13 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
         <div className="grid gap-5">
           <p className="eyebrow">Signed in as {user.name}</p>
           <h1 className="text-2xl font-medium tracking-tight">
-            {info?.authorized
-              ? 'Connection approved.'
-              : info?.kind === 'embed'
-                ? 'Connect this toolbar?'
-                : 'Connect your local tools?'}
+            {info?.denied
+              ? 'Connection denied.'
+              : info?.authorized
+                ? 'Connection approved.'
+                : info?.kind === 'embed'
+                  ? 'Connect this toolbar?'
+                  : 'Connect your local tools?'}
           </h1>
           {error ? (
             <p className="text-xs text-destructive" role="alert">
@@ -289,11 +336,17 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
             </p>
           ) : null}
           <p className="text-xs leading-6 text-muted-foreground">
-            {info?.authorized
-              ? 'Return to your website or terminal. You can close this window.'
-              : info?.kind === 'embed'
-                ? `${info.projectName} on ${info.parentOrigin}`
-                : 'Allow CLI and MCP tools to use your account permissions.'}
+            {info?.denied
+              ? 'The connection was declined. You can close this window.'
+              : info?.authorized
+                ? 'Return to your website or terminal. You can close this window.'
+                : info?.kind === 'embed'
+                  ? `${info.projectName} on ${info.parentOrigin}`
+                  : 'Allow CLI and MCP tools to use your account permissions.'}
+          </p>
+          <p className="text-xs font-medium">Approval code: {grant}</p>
+          <p className="text-xs text-muted-foreground">
+            Only approve this code if it matches the code in your toolbar or terminal.
           </p>
           <div className="grid gap-3 rounded-lg border bg-muted/40 p-4 text-xs text-secondary-foreground">
             <span className="flex gap-2">
@@ -315,14 +368,14 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
                 : 'Credentials stay outside your repository'}
             </span>
           </div>
-          {info && !info.authorized ? (
+          {info && !info.authorized && !info.denied ? (
             <Button
               disabled={busy}
               onClick={() => {
                 setBusy(true);
-                void request(`/api/auth/grants/${encodeURIComponent(grant ?? '')}/approve`, {
+                void request('/api/connections/approve', {
                   method: 'POST',
-                  body: {},
+                  body: { code: grant, accept: true },
                 })
                   .then(load)
                   .catch((failure: unknown) => {
@@ -336,6 +389,30 @@ function Consent({ user, onLogout }: { user: Account; onLogout: () => void }) {
               Approve connection <ArrowUpRight />
             </Button>
           ) : null}
+          <Button
+            variant="outline"
+            disabled={busy || !info || info.authorized || info.denied}
+            onClick={() => {
+              setBusy(true);
+              void request('/api/connections/approve', {
+                method: 'POST',
+                body: { code: grant, accept: false },
+              })
+                .then(() => {
+                  setInfo((current) =>
+                    current ? { ...current, denied: true, authorized: false } : null,
+                  );
+                })
+                .catch((failure: unknown) => {
+                  setError(messageOf(failure));
+                })
+                .finally(() => {
+                  setBusy(false);
+                });
+            }}
+          >
+            Deny connection
+          </Button>
           <Button variant="ghost" onClick={onLogout}>
             Use another account
           </Button>
@@ -349,7 +426,102 @@ const consentSchema = z.object({
   projectName: z.string().nullable(),
   parentOrigin: z.string().nullable(),
   authorized: z.boolean(),
+  denied: z.boolean(),
 });
+
+const accountConnectionsSchema = z.object({
+  connections: z.array(
+    z.object({
+      clientId: z.string(),
+      name: z.string().nullable(),
+      kind: z.enum(['embed', 'personal']),
+      parentOrigin: z.string().nullable(),
+    }),
+  ),
+});
+
+function AccountSecurity() {
+  const [connections, setConnections] = useState<
+    z.infer<typeof accountConnectionsSchema>['connections']
+  >([]);
+  const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
+  const load = useCallback(async () => {
+    const data = accountConnectionsSchema.parse(await request('/api/account/connections'));
+    setConnections(data.connections);
+    setReady(true);
+  }, []);
+  useEffect(() => {
+    void load().catch((failure: unknown) => toast.error(messageOf(failure)));
+  }, [load]);
+  const revoke = async (clientId?: string) => {
+    setBusy(true);
+    try {
+      await request(clientId ? `/api/account/connections/${clientId}` : '/api/account/revoke-all', {
+        method: clientId ? 'DELETE' : 'POST',
+        body: {},
+      });
+      await load();
+      toast.success(
+        clientId
+          ? 'Connection revoked.'
+          : 'Other sessions, toolbar connections, local tools and agent keys revoked.',
+      );
+    } catch (failure) {
+      toast.error(messageOf(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <PageHeading
+        title="Your account security"
+        description="Disconnect a lost device or remove access you no longer use."
+      />
+      <Section title="Connected tools and websites">
+        {!ready ? (
+          <p className="text-xs text-muted-foreground">Loading connections…</p>
+        ) : !connections.length ? (
+          <p className="text-xs text-muted-foreground">No connected tools or websites.</p>
+        ) : (
+          connections.map((connection) => (
+            <div
+              className="flex items-center justify-between gap-4 border-b py-4 last:border-b-0"
+              key={connection.clientId}
+            >
+              <div>
+                <p className="text-sm">
+                  {connection.kind === 'embed' ? 'Website toolbar' : 'Local CLI / MCP'}
+                </p>
+                <p className="mt-1 break-all text-xs text-muted-foreground">
+                  {connection.parentOrigin ?? 'Account access for your local tools'}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => void revoke(connection.clientId)}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ))
+        )}
+      </Section>
+      <Section title="Recover a lost device">
+        <p className="mb-4 text-xs leading-6 text-muted-foreground">
+          Revoke every toolbar and local tool connection, your agent keys, and other browser
+          sessions. This browser stays signed in. Connect your trusted tools again afterwards.
+        </p>
+        <Button variant="destructive" disabled={busy} onClick={() => void revoke()}>
+          Revoke other access
+        </Button>
+      </Section>
+    </>
+  );
+}
 
 function NewProject({
   open,
@@ -422,7 +594,7 @@ function NewProject({
             <Textarea
               id="project-origins"
               name="origins"
-              defaultValue={demoUrl}
+              defaultValue={new URL(demoUrl).origin}
               placeholder="https://your-website.com"
               required
               className="min-h-24 text-xs leading-6"
@@ -1080,6 +1252,12 @@ function Dashboard({
   const [selected, setSelected] = useState(() => localStorage.getItem('feedback-project-v1') ?? '');
   const [view, setView] = useState<View>('feedback');
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const pagination = useRef<{ projectId: string; before: number | null; criteria: string }>({
+    projectId: '',
+    before: null,
+    criteria: '',
+  });
   const [jobs, setJobs] = useState<Work[]>([]);
   const [members, setMembers] = useState<z.infer<typeof memberListSchema>>([]);
   const [agents, setAgents] = useState<z.infer<typeof agentListSchema>>([]);
@@ -1099,18 +1277,53 @@ function Dashboard({
         .parse(await request('/api/projects')).projects;
       const chosen = list.find((item) => item.id === (preferred ?? selected)) ?? list[0];
       if (chosen) {
-        const [data, people, connections] = await Promise.all([
-          request(`/api/projects/${chosen.id}/threads`),
+        const [data, people, connections, currentThread] = await Promise.all([
+          request(
+            `/api/projects/${chosen.id}/threads?q=${encodeURIComponent(search)}${filter === 'all' ? '' : `&status=${filter}`}`,
+          ),
           request(`/api/projects/${chosen.id}/members`),
           chosen.role === 'owner'
             ? request(`/api/projects/${chosen.id}/credentials`)
             : Promise.resolve({ credentials: [] }),
+          activeId ? request(`/api/threads/${activeId}`) : Promise.resolve(null),
         ]);
         if (version !== generation.current) return;
         const feedback = z
-          .object({ threads: z.array(threadSchema), jobs: z.array(publicJobSchema) })
+          .object({
+            threads: z.array(threadSchema),
+            jobs: z.array(publicJobSchema),
+            nextBefore: z.number().nullable(),
+          })
           .parse(data);
-        setThreads(feedback.threads);
+        const current = currentThread
+          ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
+          : null;
+        if (current?.thread.projectId === chosen.id) {
+          feedback.threads = [
+            current.thread,
+            ...feedback.threads.filter((thread) => thread.id !== current.thread.id),
+          ];
+          feedback.jobs = [
+            ...feedback.jobs.filter((job) => job.threadId !== current.thread.id),
+            ...current.jobs,
+          ];
+        }
+        const criteria = JSON.stringify([search, filter]);
+        if (
+          pagination.current.projectId !== chosen.id ||
+          pagination.current.criteria !== criteria
+        ) {
+          pagination.current = { projectId: chosen.id, before: feedback.nextBefore, criteria };
+          setNextBefore(feedback.nextBefore);
+          setThreads(feedback.threads);
+        } else {
+          setThreads((previous) => [
+            ...feedback.threads,
+            ...previous.filter(
+              (thread) => !feedback.threads.some((current) => current.id === thread.id),
+            ),
+          ]);
+        }
         setJobs(feedback.jobs);
         setMembers(z.object({ members: memberListSchema }).parse(people).members);
         setAgents(z.object({ credentials: agentListSchema }).parse(connections).credentials);
@@ -1122,7 +1335,7 @@ function Dashboard({
         setReady(true);
       }
     },
-    [selected],
+    [selected, search, filter, activeId],
   );
   useEffect(() => {
     void refresh().catch((failure: unknown) => toast.error(messageOf(failure)));
@@ -1143,11 +1356,13 @@ function Dashboard({
   };
   const tryDemo = () => {
     if (!p) return;
-    if (!p.origins.includes(demoUrl)) {
+    const destination = new URL(demoUrl);
+    if (!p.origins.includes(destination.origin)) {
       toast.error('Add the example website origin in Installation first.');
       return;
     }
-    window.open(`${demoUrl}/?project=${encodeURIComponent(p.id)}`, '_blank', 'noopener');
+    destination.searchParams.set('project', p.id);
+    window.open(destination.href, '_blank', 'noopener');
   };
   const visible = threads.filter(
     (thread) =>
@@ -1187,17 +1402,7 @@ function Dashboard({
                   view === id && 'bg-secondary/60 font-medium text-secondary-foreground',
                 )}
                 onClick={() => {
-                  const next = ['feedback', 'install', 'appearance', 'people', 'agents'].find(
-                    (item) => item === id,
-                  );
-                  if (
-                    next === 'feedback' ||
-                    next === 'install' ||
-                    next === 'appearance' ||
-                    next === 'people' ||
-                    next === 'agents'
-                  )
-                    changeView(next);
+                  changeView(id);
                 }}
               >
                 <Icon className="size-4" />
@@ -1285,6 +1490,8 @@ function Dashboard({
                 description="Loading your projects and conversations."
                 symbol={<Loader2 className="size-5 animate-spin" />}
               />
+            ) : view === 'account' ? (
+              <AccountSecurity />
             ) : !p ? (
               <Empty
                 title="Bring your website into the loop."
@@ -1418,7 +1625,7 @@ function Dashboard({
                             <span>{relativeTime(thread.updatedAt)}</span>
                             <span className="flex items-center gap-1">
                               <MessageCircle className="size-3" />
-                              {thread.messages.length}
+                              {thread.messageCount ?? thread.messages.length}
                             </span>
                           </div>
                         </Button>
@@ -1449,6 +1656,38 @@ function Dashboard({
                     </Empty>
                   )}
                 </Card>
+                {nextBefore ? (
+                  <Button
+                    variant="outline"
+                    className="mt-4"
+                    onClick={() => {
+                      const projectId = p.id;
+                      void request(
+                        `/api/projects/${projectId}/threads?before=${nextBefore}&q=${encodeURIComponent(search)}${filter === 'all' ? '' : `&status=${filter}`}`,
+                      )
+                        .then((data) => {
+                          if (pagination.current.projectId !== projectId) return;
+                          const page = z
+                            .object({
+                              threads: z.array(threadSchema),
+                              nextBefore: z.number().nullable(),
+                            })
+                            .parse(data);
+                          setThreads((previous) => [
+                            ...previous,
+                            ...page.threads.filter(
+                              (thread) => !previous.some((current) => current.id === thread.id),
+                            ),
+                          ]);
+                          pagination.current.before = page.nextBefore;
+                          setNextBefore(page.nextBefore);
+                        })
+                        .catch((failure: unknown) => toast.error(messageOf(failure)));
+                    }}
+                  >
+                    Load earlier conversations
+                  </Button>
+                ) : null}
                 <p className="mt-5 flex items-center justify-center gap-2 text-[10px] text-muted-foreground">
                   <Users className="size-3" />
                   Only members of {p.name} can see these conversations.
@@ -1535,12 +1774,22 @@ function Dashboard({
 function App() {
   const [user, setUser] = useState<Account | null>(null);
   const [ready, setReady] = useState(false);
-  const [config, setConfig] = useState({ demoUrl: 'http://localhost:4311', allowSignup: true });
+  const [config, setConfig] = useState({
+    demoUrl: 'http://localhost:4311',
+    allowSignup: true,
+    github: false,
+    localPassword: true,
+  });
   const [error, setError] = useState('');
   useEffect(() => {
     void (async () => {
       const data = z
-        .object({ demoUrl: z.string(), allowSignup: z.boolean() })
+        .object({
+          demoUrl: z.string(),
+          allowSignup: z.boolean(),
+          github: z.boolean(),
+          localPassword: z.boolean(),
+        })
         .parse(await request('/api/config'));
       setConfig(data);
       try {
@@ -1553,8 +1802,30 @@ function App() {
       setError(messageOf(failure));
     });
   }, []);
+  useEffect(() => {
+    let active = true;
+    const check = () => {
+      void request('/api/auth/get-session')
+        .then((session) => {
+          if (!active) return;
+          setUser(
+            session === null ? null : z.object({ user: publicUserSchema }).parse(session).user,
+          );
+        })
+        .catch(() => {
+          /* A network outage retains the current screen until the next check. */
+        });
+    };
+    const timer = setInterval(check, 60_000);
+    window.addEventListener('focus', check);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener('focus', check);
+    };
+  }, []);
   const logout = () =>
-    void request('/api/auth/logout', { method: 'POST', body: {} })
+    void request('/api/auth/sign-out', { method: 'POST', body: {} })
       .then(() => {
         setUser(null);
       })
@@ -1571,11 +1842,16 @@ function App() {
           symbol={<Loader2 className="animate-spin" />}
         />
       ) : !user ? (
-        <Auth onSignIn={setUser} allowSignup={config.allowSignup} />
+        <Auth
+          onSignIn={setUser}
+          allowSignup={config.allowSignup}
+          github={config.github}
+          localPassword={config.localPassword}
+        />
       ) : grant ? (
         <Consent user={user} onLogout={logout} />
       ) : (
-        <Dashboard user={user} onLogout={logout} demoUrl={config.demoUrl} />
+        <Dashboard key={user.id} user={user} onLogout={logout} demoUrl={config.demoUrl} />
       )}
     </TooltipProvider>
   );

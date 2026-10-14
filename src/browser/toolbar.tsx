@@ -9,7 +9,6 @@ import {
   defaultTheme,
   projectSchema,
   publicJobSchema,
-  publicUserSchema,
   themeSchema,
   threadSchema,
 } from '../shared/models.js';
@@ -23,6 +22,12 @@ import { TooltipProvider } from './components/ui/tooltip.js';
 import { Toaster } from './components/ui/sonner.js';
 import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
 import type { Work } from './components/common.js';
+import {
+  connectionSchema,
+  deviceConnectionSchema,
+  exchangeConnection,
+  revokeConnection,
+} from '../shared/oauth.js';
 
 const parameters = new URLSearchParams(location.search);
 const projectId = parameters.get('project') ?? '';
@@ -32,11 +37,7 @@ const send = (data: unknown) => {
 };
 const publicProjectSchema = z.object({ name: z.string(), theme: themeSchema });
 const themeOverridesSchema = themeSchema.partial();
-const authenticationSchema = z.object({
-  token: z.string(),
-  user: publicUserSchema,
-  expiresAt: z.number(),
-});
+const authenticationSchema = connectionSchema;
 type Authentication = z.infer<typeof authenticationSchema>;
 const sessionKey = `feedback-embed:${projectId}:${parentOrigin}`;
 function savedSession(): Authentication | null {
@@ -44,7 +45,7 @@ function savedSession(): Authentication | null {
     const data = sessionStorage.getItem(sessionKey);
     if (!data) return null;
     const result = authenticationSchema.safeParse(JSON.parse(data));
-    return result.success && result.data.expiresAt > Date.now() ? result.data : null;
+    return result.success ? result.data : null;
   } catch {
     return null;
   }
@@ -57,13 +58,6 @@ function storeSession(auth: Authentication | null) {
     /* Browsers that deny embedded storage keep the session in memory. */
   }
 }
-function base64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '');
-}
-
 function Toolbar() {
   const [expanded, setExpanded] = useState(false);
   const [mini, setMini] = useState(false);
@@ -75,6 +69,8 @@ function Toolbar() {
   const [screen, setScreen] = useState<'list' | 'selecting' | 'compose' | 'thread'>('list');
   const [context, setContext] = useState<z.infer<typeof contextSchema> | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const loadedPages = useRef(false);
   const [jobs, setJobs] = useState<Work[]>([]);
   const [role, setRole] = useState('viewer');
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -83,7 +79,9 @@ function Toolbar() {
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<{
     id: string;
-    verifier: string;
+    clientId: string;
+    code: string;
+    interval: number;
     url: string;
     expires: number;
   } | null>(null);
@@ -93,23 +91,67 @@ function Toolbar() {
     () => themeSchema.parse({ ...theme, ...overrides }),
     [theme, overrides],
   );
+  const renewal = useRef<Promise<Authentication> | null>(null);
+  const latestAuth = useRef(auth);
   const api = useCallback(
-    (path: string, options: { method?: string; body?: unknown } = {}) =>
-      request(path, { ...options, ...(auth ? { token: auth.token } : {}) }),
+    async (path: string, options: { method?: string; body?: unknown } = {}) => {
+      let current = latestAuth.current ?? auth;
+      if (current && current.expiresAt < Date.now() + 60_000) {
+        const previous = current;
+        renewal.current ??= exchangeConnection(location.origin, previous.clientId, {
+          refreshToken: previous.refreshToken,
+        })
+          .then((result) => {
+            if (!result.connection) throw new Error('Sign in again.');
+            const renewed = { ...result.connection, user: result.connection.user ?? previous.user };
+            latestAuth.current = renewed;
+            storeSession(renewed);
+            setAuth(renewed);
+            return renewed;
+          })
+          .finally(() => {
+            renewal.current = null;
+          });
+        current = await renewal.current;
+      }
+      return request(path, { ...options, ...(current ? { token: current.token } : {}) });
+    },
     [auth],
   );
+  useEffect(() => {
+    latestAuth.current = auth;
+  }, [auth]);
   const refresh = useCallback(async () => {
     if (!auth) return;
     const current = ++version.current;
-    const [list, projects] = await Promise.all([
-      api(`/api/projects/${projectId}/threads`),
+    const [list, projects, currentThread] = await Promise.all([
+      api(`/api/projects/${projectId}/threads${page ? `?url=${encodeURIComponent(page)}` : ''}`),
       api('/api/projects'),
+      activeId ? api(`/api/threads/${activeId}`) : Promise.resolve(null),
     ]);
     if (current !== version.current) return;
     const data = z
-      .object({ threads: z.array(threadSchema), jobs: z.array(publicJobSchema) })
+      .object({
+        threads: z.array(threadSchema),
+        jobs: z.array(publicJobSchema),
+        nextBefore: z.number().nullable(),
+      })
       .parse(list);
-    setThreads(data.threads);
+    const latest = currentThread
+      ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
+      : null;
+    if (latest) {
+      data.threads = [
+        latest.thread,
+        ...data.threads.filter((thread) => thread.id !== latest.thread.id),
+      ];
+      data.jobs = [...data.jobs.filter((job) => job.threadId !== latest.thread.id), ...latest.jobs];
+    }
+    setThreads((previous) => [
+      ...data.threads,
+      ...previous.filter((thread) => !data.threads.some((current) => current.id === thread.id)),
+    ]);
+    if (!loadedPages.current) setNextBefore(data.nextBefore);
     setJobs(data.jobs);
     const own = z
       .object({ projects: z.array(projectSchema.extend({ role: z.string() })) })
@@ -117,7 +159,7 @@ function Toolbar() {
       .projects.find((item) => item.id === projectId);
     setRole(own?.role ?? 'viewer');
     if (own) setTheme(own.theme);
-  }, [auth, api]);
+  }, [auth, api, page, activeId]);
   useEffect(() => {
     document.documentElement.classList.add('toolbar-document');
     void request(
@@ -187,9 +229,15 @@ function Toolbar() {
     if (data.type === 'feedback:configure') {
       setOverrides(data.theme ?? {});
       setPage(data.url ?? '');
+      loadedPages.current = false;
+      setNextBefore(null);
+      setThreads([]);
     }
     if (data.type === 'feedback:navigation') {
       setPage(data.url ?? '');
+      loadedPages.current = false;
+      setNextBefore(null);
+      setThreads([]);
       setScreen('list');
       setActiveId(null);
       setDraft('');
@@ -219,20 +267,23 @@ function Toolbar() {
   useEffect(() => {
     if (!pending) return;
     const state = { cancelled: false, checking: false };
+    let pollingInterval = pending.interval;
     const isCancelled = () => state.cancelled;
     const check = async () => {
       if (state.checking || state.cancelled) return;
       state.checking = true;
       try {
         if (pending.expires < Date.now()) throw new Error('Sign-in request expired. Try again.');
-        const response = await request('/api/auth/exchange', {
-          method: 'POST',
-          body: { id: pending.id, verifier: pending.verifier },
+        const result = await exchangeConnection(location.origin, pending.clientId, {
+          deviceCode: pending.id,
         });
-        const result = authenticationSchema.safeParse(response);
-        if (result.success && !isCancelled()) {
-          setAuth(result.data);
-          storeSession(result.data);
+        if (result.pending) {
+          if (result.slowDown) pollingInterval += 5;
+          return;
+        }
+        if (result.connection && !isCancelled()) {
+          setAuth(result.connection);
+          storeSession(result.connection);
           setPending(null);
           setError('');
         }
@@ -245,7 +296,13 @@ function Toolbar() {
         state.checking = false;
       }
     };
-    const timer = setInterval(() => void check(), 1500);
+    let lastCheck = Date.now();
+    const timer = setInterval(() => {
+      if (Date.now() - lastCheck >= pollingInterval * 1000) {
+        lastCheck = Date.now();
+        void check();
+      }
+    }, 1000);
     return () => {
       state.cancelled = true;
       clearInterval(timer);
@@ -256,17 +313,23 @@ function Toolbar() {
     try {
       let info = pending;
       if (!info) {
-        const verifier = base64(crypto.getRandomValues(new Uint8Array(32)));
-        const proof = base64(
-          new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))),
-        );
-        const grant = z.object({ id: z.string(), loginUrl: z.string() }).parse(
-          await request('/api/auth/grants', {
+        const grant = deviceConnectionSchema.parse(
+          await request('/api/connections/start', {
             method: 'POST',
-            body: { challenge: proof, kind: 'embed', projectId, parentOrigin },
+            body: { kind: 'embed', projectId, parentOrigin },
           }),
         );
-        info = { id: grant.id, url: grant.loginUrl, verifier, expires: Date.now() + 10 * 60_000 };
+        const destination = new URL(grant.verification_uri_complete);
+        if (destination.origin !== location.origin || destination.pathname !== '/auth')
+          throw new Error('Invalid approval URL.');
+        info = {
+          id: grant.device_code,
+          clientId: grant.clientId,
+          code: grant.user_code,
+          interval: grant.interval,
+          url: destination.href,
+          expires: Date.now() + grant.expires_in * 1000,
+        };
         setPending(info);
       }
       if (popup) popup.location.href = info.url;
@@ -300,11 +363,13 @@ function Toolbar() {
   };
   const signOut = async () => {
     try {
-      await api('/api/auth/logout', { method: 'POST', body: {} });
+      if (auth) await revokeConnection(location.origin, auth.clientId, auth.refreshToken);
     } finally {
       storeSession(null);
       setAuth(null);
       setThreads([]);
+      loadedPages.current = false;
+      setNextBefore(null);
       setJobs([]);
       back();
     }
@@ -410,7 +475,7 @@ function Toolbar() {
                 </p>
                 {pending ? (
                   <p className="text-[10px] text-muted-foreground">
-                    Waiting for you to approve the connection…
+                    Approval code: {pending.code}. Confirm this code in the sign-in window.
                   </p>
                 ) : null}
               </Empty>
@@ -558,7 +623,7 @@ function Toolbar() {
                           <span>·</span>
                           {relativeTime(thread.updatedAt)}
                           <Badge variant="secondary" className="text-[9px]">
-                            {thread.messages.length} messages
+                            {thread.messageCount ?? thread.messages.length} messages
                           </Badge>
                           {job ? <JobBadge job={job} /> : null}
                         </span>
@@ -581,13 +646,46 @@ function Toolbar() {
                     )}
                   </Empty>
                 )}
+                {nextBefore ? (
+                  <Button
+                    variant="ghost"
+                    className="m-4"
+                    size="sm"
+                    onClick={() => {
+                      void api(
+                        `/api/projects/${projectId}/threads?before=${nextBefore}${page ? `&url=${encodeURIComponent(page)}` : ''}`,
+                      )
+                        .then((result) => {
+                          const page = z
+                            .object({
+                              threads: z.array(threadSchema),
+                              nextBefore: z.number().nullable(),
+                            })
+                            .parse(result);
+                          loadedPages.current = true;
+                          setNextBefore(page.nextBefore);
+                          setThreads((previous) => [
+                            ...previous,
+                            ...page.threads.filter(
+                              (thread) => !previous.some((current) => current.id === thread.id),
+                            ),
+                          ]);
+                        })
+                        .catch((failure: unknown) => {
+                          setError(messageOf(failure));
+                        });
+                    }}
+                  >
+                    Load earlier feedback
+                  </Button>
+                ) : null}
               </div>
             </>
           )}
           <footer className="flex shrink-0 items-center justify-between border-t px-5 py-3 text-[10px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="size-1.5 rounded-full bg-primary" />
-              {auth?.user.name ?? 'Private project feedback'}
+              {auth?.user?.name ?? 'Private project feedback'}
             </span>
             {auth ? (
               <Button

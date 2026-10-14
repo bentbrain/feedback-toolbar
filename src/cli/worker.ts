@@ -101,20 +101,22 @@ export async function runWorker(options: {
         const log = await open(logFile, 'wx', 0o600);
         const running = spawn(
           'codex',
-          [
-            'exec',
-            ...permissions.args,
-            '--json',
-            '--output-last-message',
-            resultFile,
-            policy + '\nFeedback task follows as JSON:\n' + JSON.stringify(job.snapshot),
-          ],
+          ['exec', ...permissions.args, '--json', '--output-last-message', resultFile, '-'],
           {
             cwd: connection.workspace,
             env: permissions.environment,
-            stdio: ['ignore', log.fd, 'inherit'],
+            stdio: ['pipe', log.fd, 'inherit'],
           },
         );
+        const input = running.stdin;
+        if (!input) {
+          running.kill('SIGTERM');
+          throw new Error('Runner input is unavailable.');
+        }
+        input.end(policy + '\nFeedback task follows as JSON:\n' + JSON.stringify(job.snapshot));
+        input.on('error', () => {
+          running.kill('SIGTERM');
+        });
         child = running;
         let heartbeatBusy = false;
         state.connectionLost = false;

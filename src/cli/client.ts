@@ -4,12 +4,19 @@ import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { lock } from 'proper-lockfile';
 import { installConfigSchema, originSchema } from '../shared/models.js';
 import { readRegularFile, replaceFile } from '../shared/files.js';
+import { exchangeConnection } from '../shared/oauth.js';
 
 const credentialsSchema = z.record(
   z.string(),
-  z.object({ token: z.string(), expiresAt: z.number() }),
+  z.object({
+    token: z.string(),
+    expiresAt: z.number(),
+    refreshToken: z.string().optional(),
+    clientId: z.string().optional(),
+  }),
 );
 const directory = process.env.FEEDBACK_CONFIG_DIR ?? join(homedir(), '.config', 'feedback-toolbar');
 export const bindingKey = (server: string, projectId: string, workspace: string) =>
@@ -27,12 +34,15 @@ export async function storedCredentials() {
     throw error;
   }
 }
-export async function saveCredential(
+async function writeCredential(
   key: string,
-  credential: { token: string; expiresAt: number },
+  credential: {
+    token: string;
+    expiresAt: number;
+    refreshToken?: string | undefined;
+    clientId?: string | undefined;
+  },
 ) {
-  const records = await storedCredentials();
-  records[key] = credential;
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const folder = await open(
     directory,
@@ -43,8 +53,57 @@ export async function saveCredential(
   } finally {
     await folder.close();
   }
+  const records = await storedCredentials();
+  records[key] = credential;
   const path = join(directory, 'credentials.json');
   await replaceFile(path, `${JSON.stringify(records, null, 2)}\n`, 0o600);
+}
+async function lockedCredentials<T>(action: () => Promise<T>): Promise<T> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const folder = await open(
+    directory,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await folder.chmod(0o700);
+  } finally {
+    await folder.close();
+  }
+  const release = await lock(directory, {
+    lockfilePath: join(directory, '.credentials.lock'),
+    stale: 30_000,
+    retries: { retries: 350, factor: 1, minTimeout: 100, maxTimeout: 100 },
+  });
+  try {
+    return await action();
+  } finally {
+    await release();
+  }
+}
+export async function saveCredential(
+  key: string,
+  credential: {
+    token: string;
+    expiresAt: number;
+    refreshToken?: string | undefined;
+    clientId?: string | undefined;
+  },
+) {
+  await lockedCredentials(() => writeCredential(key, credential));
+}
+async function refreshCredential(server: string, key: string) {
+  return lockedCredentials(async () => {
+    const latest = (await storedCredentials())[key];
+    if (!latest) throw new Error('Sign in again.');
+    if (latest.expiresAt >= Date.now() + 60_000) return latest;
+    if (!latest.refreshToken || !latest.clientId) throw new Error('Reconnect this credential.');
+    const result = await exchangeConnection(server, latest.clientId, {
+      refreshToken: latest.refreshToken,
+    });
+    if (!result.connection) throw new Error('Sign in again.');
+    await writeCredential(key, result.connection);
+    return result.connection;
+  });
 }
 export async function publicConfig(workspace = process.cwd()) {
   try {
@@ -76,21 +135,40 @@ export async function client(
   const projectId = options.projectId ?? config?.projectId;
   const records = await storedCredentials();
   const key = options.agent && projectId ? bindingKey(server, projectId, workspace) : server;
-  const auth = process.env.FEEDBACK_TOKEN
+  let auth = process.env.FEEDBACK_TOKEN
     ? { token: process.env.FEEDBACK_TOKEN, expiresAt: Infinity }
     : records[key];
+  if (auth && auth.expiresAt < Date.now() + 60_000 && auth.refreshToken && auth.clientId) {
+    auth = await refreshCredential(server, key);
+  }
   if (!auth || auth.expiresAt < Date.now())
     throw new Error(
       `Sign in first: feedback-toolbar login --server ${server}${options.agent ? '\nThen run init to create a project-scoped connection for this workspace.' : ''}`,
     );
+  let credential = auth;
+  let renewal: Promise<void> | null = null;
   const api = async (
     path: string,
     request: { method?: string; body?: unknown; key?: string } = {},
   ) => {
+    if (
+      credential.expiresAt < Date.now() + 60_000 &&
+      credential.clientId &&
+      credential.refreshToken
+    ) {
+      renewal ??= refreshCredential(server, key)
+        .then((next) => {
+          credential = next;
+        })
+        .finally(() => {
+          renewal = null;
+        });
+      await renewal;
+    }
     const response = await fetch(`${server}${path}`, {
       method: request.method ?? 'GET',
       headers: {
-        Authorization: `Bearer ${auth.token}`,
+        Authorization: `Bearer ${credential.token}`,
         'Content-Type': 'application/json',
         ...(request.key ? { 'Idempotency-Key': request.key } : {}),
       },

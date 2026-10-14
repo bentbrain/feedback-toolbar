@@ -39,14 +39,12 @@ export const themeSchema = z
   .strict();
 export type Theme = z.infer<typeof themeSchema>;
 export const defaultTheme = themeSchema.parse({});
-export const userSchema = z.object({
+export const publicUserSchema = z.object({
   id: z.string(),
   name: z.string(),
   email: z.email(),
-  passwordHash: z.string(),
   createdAt: z.string(),
 });
-export const publicUserSchema = userSchema.omit({ passwordHash: true });
 export const roleSchema = z.enum(['owner', 'member', 'viewer']);
 export const memberSchema = z.object({
   id: z.string(),
@@ -78,15 +76,6 @@ export const credentialSchema = z.object({
   expiresAt: z.number(),
   createdAt: z.string(),
   parentOrigin: z.string().nullable(),
-});
-export const grantSchema = z.object({
-  id: z.string(),
-  challenge: z.string(),
-  projectId: z.string().nullable(),
-  parentOrigin: z.string().nullable(),
-  kind: z.enum(['embed', 'personal']),
-  userId: z.string().nullable(),
-  expiresAt: z.number(),
 });
 const anchorSchema = z
   .object({
@@ -134,6 +123,7 @@ export const threadSchema = z.object({
   context: contextSchema,
   status: z.enum(['open', 'resolved']),
   messages: z.array(messageSchema),
+  messageCount: z.number().int().nonnegative().optional(),
   revision: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -174,14 +164,10 @@ export const eventSchema = z.object({
 export const installConfigSchema = z
   .object({ server: originSchema, projectId: z.string(), theme: themeSchema.optional() })
   .strict();
-export const signInSchema = z
-  .object({ email: z.email().max(200), password: z.string().min(12).max(200) })
-  .strict();
-export const signUpSchema = signInSchema.extend({ name: z.string().trim().min(1).max(60) });
 export type Project = z.infer<typeof projectSchema>;
 export type Thread = z.infer<typeof threadSchema>;
 export type Credential = z.infer<typeof credentialSchema>;
-export type User = z.infer<typeof userSchema>;
+export type User = z.infer<typeof publicUserSchema>;
 
 function escapeHtml(value: string): string {
   return value.replace(

@@ -362,6 +362,11 @@ export function Conversation({
         {job ? (
           <div className="space-y-2">
             <JobBadge job={job} />
+            {job.status === 'review' &&
+            job.result &&
+            !thread.messages.some((message) => message.id === job.id) ? (
+              <p className="whitespace-pre-wrap text-xs leading-6">{job.result}</p>
+            ) : null}
             <p className="text-[11px] leading-5 text-muted-foreground">
               {job.status === 'queued'
                 ? 'Waiting for your local connector. Your request is saved.'
@@ -371,7 +376,9 @@ export function Conversation({
                     : 'Your agent is working on this feedback.'
                   : job.status === 'review'
                     ? 'Review the proposed change before resolving this thread.'
-                    : `Work ${job.status}.`}
+                    : job.status === 'failed' && job.result
+                      ? job.result
+                      : `Work ${job.status}.`}
             </p>
           </div>
         ) : null}

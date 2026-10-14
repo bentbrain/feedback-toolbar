@@ -40,6 +40,8 @@ void test(
         `FEEDBACK_URL:${url}`,
         '--var',
         'DEMO_URL:http://localhost:4311',
+        '--var',
+        `BETTER_AUTH_SECRET:${randomUUID()}`,
       ],
       { stdio: ['ignore', 'ignore', 'pipe'] },
     );
@@ -68,16 +70,16 @@ void test(
         await delay(250);
       }
       assert.ok(ready, `Workers runtime did not start: ${diagnostic}`);
-      const signup = await fetch(`${url}/api/auth/signup`, {
+      const signup = await fetch(`${url}/api/auth/sign-up/email`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Origin: url },
         body: JSON.stringify({
           name: 'Runtime reviewer',
           email: `${randomUUID()}@example.invalid`,
           password: randomUUID(),
         }),
       });
-      assert.equal(signup.status, 201);
+      assert.equal(signup.status, 200, await signup.text());
       const cookie = signup.headers.get('set-cookie')?.split(';')[0];
       assert.ok(cookie);
       const call = async (path: string, body?: unknown, bearer?: string) => {

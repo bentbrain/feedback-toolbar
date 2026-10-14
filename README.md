@@ -8,7 +8,7 @@ The embed works with any framework. A small JavaScript loader mounts a separate-
 
 ## Install on a website
 
-Create an account in your feedback service, create a project, and register the website's exact origins. Copy the script from **Installation** into the website's shared HTML layout:
+Sign into your feedback service with GitHub, create a project, and register the website's exact origins. Copy the script from **Installation** into the website's shared HTML layout:
 
 ```html
 <script defer src="https://YOUR-FEEDBACK-SERVICE/embed.js" data-project="YOUR-PROJECT-ID"></script>
@@ -83,7 +83,7 @@ node dist/cli.js worker --runner codex --workspace /path/to/website
 
 This adapter requires Codex CLI 0.161.0 or newer and an existing harness login. It ignores user configuration and execution rules, enforces a workspace permission profile, denies secret files and unrelated filesystem reads, disables command networking, and supplies a minimal tool environment. It never auto-merges or deploys. Use WSL on Windows. Prepare dependencies before starting; network-dependent checks must be run separately by a trusted operator.
 
-Claims are exclusive per project and tied to a leased credential. Revocation, cancellation, or lease expiry stops further authorized updates. A crashed or ambiguous run requires review before retrying. Agent completion leaves the feedback thread open for human review.
+Claims are exclusive per project and tied to a leased credential. Revocation, cancellation, or lease expiry stops further authorized updates. Expired runs become failed and release the queue, with a visible instruction to inspect local changes. They are never replayed automatically. Agent completion leaves the feedback thread open for human review. Agent snapshots have a 512 KB limit and are delivered through stdin.
 
 ## Appearance
 
@@ -95,7 +95,7 @@ Project owners configure light, dark, or system mode; accent color; corner radiu
 bun run dev
 ```
 
-Open `http://localhost:4310` for the dashboard and `http://localhost:4311` for the separate example website. The dashboard walks through project creation, installation, and toolbar sign-in. SQLite data lives in the ignored `.data/` directory. The self-hosted Node service uses the same authorization and storage interfaces as production.
+Open `http://localhost:4310` for the dashboard and `http://localhost:4311` for the separate example website. The dashboard walks through project creation, installation, and toolbar sign-in. SQLite data lives in the ignored `.data/` directory. Local development uses Better Auth email/password sign-in and a persisted private signing secret. Public Node deployments require `BETTER_AUTH_SECRET`, `AUTH_GITHUB_CLIENT_ID`, and `AUTH_GITHUB_CLIENT_SECRET`; password sign-in is rejected outside loopback origins. Existing development accounts from the earlier custom-auth implementation must sign up again. Back up the old database before resetting development data.
 
 ```sh
 bun run check
@@ -106,27 +106,34 @@ Checks include formatting, strict typed ESLint, TypeScript, Knip, authorization/
 
 ## Production deployment
 
-Vercel serves built browser assets and proxies dynamic paths to a Cloudflare Worker. D1 stores accounts, memberships, hashed credentials, threads, work requests, persistent rate limits, and audit events. The example website runs on the Worker origin, separately from the toolbar UI.
+Vercel serves versioned browser assets and forwards dynamic paths through a small Node function to a Cloudflare Worker. The function signs the visitor IP, method, path, and timestamp with HMAC. The Worker rejects unsigned production API requests, preventing forged identity headers and shared proxy IP rate limits. D1 stores Better Auth accounts and OAuth grants, memberships, hashed agent keys, threads, work requests, persistent rate limits, and audit events. The example website runs on the Worker origin, separately from the toolbar UI.
 
-GitHub Actions deploys only a protected `main` commit after **Required checks** passes. The pipeline applies D1 migrations, deploys the API Worker, uploads the tested static assets through Vercel's deployment API, and checks production health. Vercel Git auto-deployments are disabled. No deploy credentials are supplied to PR tests.
+GitHub Actions deploys only a protected `main` commit after **Required checks** passes. The pipeline prepares the frontend, applies D1 migrations, provisions authentication secrets into the Worker, deploys the API, uploads the prebuilt assets and proxy function through Vercel's deployment API, and checks production health. Versioned asset paths prevent browsers from reusing an older release's scripts. Vercel Git auto-deployments are disabled. No deploy credentials are supplied to PR tests.
 
 Repository secrets:
 
-| Secret                 | Scope                                                                          |
-| ---------------------- | ------------------------------------------------------------------------------ |
-| `CLOUDFLARE_API_TOKEN` | Workers Scripts Edit, Workers Tail Read, and D1 Edit on the deployment account |
-| `VERCEL_TOKEN`         | The deployment project or team                                                 |
+| Secret                      | Purpose                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `CLOUDFLARE_API_TOKEN`      | Workers Scripts Edit, Workers Tail Read, and D1 Edit on the deployment account |
+| `VERCEL_TOKEN`              | Deployment project or team                                                     |
+| `BETTER_AUTH_SECRET`        | Private random signing/encryption secret, at least 32 characters               |
+| `AUTH_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret                                                 |
+| `FEEDBACK_PROXY_SECRET`     | Separate random secret for the authenticated Vercel-to-Worker handoff          |
 
-Repository variables are `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `FEEDBACK_URL`, and `FEEDBACK_API_ORIGIN`. Forks must also update the account, database, origins, and names in `wrangler.jsonc` before provisioning their own infrastructure. Public resource IDs in configuration are identifiers, not credentials.
+Repository variables are `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `FEEDBACK_URL`, `FEEDBACK_API_ORIGIN`, and `AUTH_GITHUB_CLIENT_ID`. Forks must also update the account, database, origins, and names in `wrangler.jsonc` before provisioning their own infrastructure. Public resource IDs in configuration are identifiers, not credentials.
 
-PR protection requires an up-to-date branch, code-owner review, approval after the last push, resolved conversations, and passing checks. The required gate includes dependency review, dependency audit, CodeQL, and a checksum-pinned Gitleaks history scan. Dependency updates run through Dependabot. Deployment tokens should expire and be rotated.
+PR protection requires an up-to-date branch, resolved conversations, **Required checks**, and **Independent review**. For this single-contributor repository, an independent T3 reviewer inspects the complete diff, findings are fixed, and a fresh review of the final commit is recorded before marking that commit's review status successful. A GitHub approval from the PR author is not required. Every new head needs its own review status; missing review blocks merging. Admins are subject to these checks, and force pushes are prohibited. The required gate includes dependency review, dependency audit, CodeQL, and a checksum-pinned Gitleaks history scan. Dependency updates run through Dependabot. Deployment tokens should expire and be rotated.
 
 ## Security boundaries
 
-Toolbar access uses its own account and an approved, single-use PKCE exchange. Browser sessions use HttpOnly cookies; embeds receive expiring project- and origin-scoped credentials. The host page never receives the iframe's bearer token. The server checks membership, role, credential scope, and registered origins on every operation. Messages are rendered as text, and theme input is validated.
+Production sign-in uses GitHub through Better Auth. Better Auth owns OAuth state validation, provider tokens, HttpOnly browser sessions, OAuth device approval, opaque access tokens, rotating refresh tokens, and hashed API keys. Local-only password sign-in also uses Better Auth. The application owns project membership and permissions.
+
+Toolbar and CLI device approval show a matching code and the connection scope. Access tokens last 15 minutes; offline grants last up to 30 days and rotate on refresh. The toolbar keeps access and refresh tokens inside its separate-origin iframe, and the host never receives them. CLI refreshes serialize across processes and reload the saved credential under a private lock. **Account security** lists authorized tools and websites and supports individual disconnection or revoking all other access, including agent keys and other browser sessions.
+
+The server checks membership, role, credential scope, and registered origins on each project operation. Agent keys cannot start work or administer permissions. Only verified production identities can be added as project members. Messages render as text, theme values are validated, and thread listings use tenant-scoped cursor pagination and bounded previews. Full conversation details load when opened, and search runs across the project rather than just the loaded page. `FEEDBACK_ALLOW_SIGNUP=false` prevents new accounts while allowing existing users to sign in.
 
 Style isolation protects rendering, not secrets from a malicious website or browser extension. Do not place private credentials in selected text. Human review remains necessary before applying agent changes. The executable adapter is a separate process using the harness's OS sandbox; it is not a separate virtual machine.
 
-Accounts currently use email/password authentication without email verification, password recovery, or SSO. Treat email addresses as unverified labels when adding members. This release needs a security review before unrestricted public signup or use with sensitive feedback. To disable signup, set `FEEDBACK_ALLOW_SIGNUP=false` after creating the required accounts.
+Before opening a deployment to users, exercise GitHub sign-in on its actual domain, check a toolbar-to-agent round trip, and test database recovery using your Cloudflare account's backup/Time Travel facilities. CI and an independent code review do not replace those deployment checks. Keep deployment and OAuth secrets in GitHub and platform secret stores, and rotate them when access changes.
 
 MIT licensed. Contributions should go through pull requests.

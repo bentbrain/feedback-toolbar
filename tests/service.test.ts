@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { createApp } from '../src/server/app.js';
 import { Store } from '../src/server/store.js';
-import { challenge, token } from '../src/server/security.js';
+import { token } from '../src/server/security.js';
 import {
   credentialSchema,
   jobSchema,
@@ -31,21 +31,30 @@ function fixture() {
     await app.request(`${service}${path}`, {
       method: options.method ?? 'GET',
       headers: {
-        'Content-Type': 'application/json',
+        'x-feedback-client-ip': '127.0.0.1',
+        'Content-Type': path.startsWith('/api/auth/oauth2/')
+          ? 'application/x-www-form-urlencoded'
+          : 'application/json',
         ...(options.cookie ? { Cookie: options.cookie } : {}),
         ...(options.bearer ? { Authorization: `Bearer ${options.bearer}` } : {}),
         ...(options.origin ? { Origin: options.origin } : {}),
         ...(options.key ? { 'Idempotency-Key': options.key } : {}),
       },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      ...(options.body === undefined
+        ? {}
+        : {
+            body: path.startsWith('/api/auth/oauth2/')
+              ? new URLSearchParams(z.record(z.string(), z.string()).parse(options.body))
+              : JSON.stringify(options.body),
+          }),
     });
   async function account(name = 'Owner') {
     const email = `${token()}@example.invalid`;
-    const response = await call('/api/auth/signup', {
+    const response = await call('/api/auth/sign-up/email', {
       method: 'POST',
       body: { name, email, password: token() },
     });
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 200);
     const cookie = response.headers.get('set-cookie')?.split(';')[0];
     assert.ok(cookie);
     return { email, cookie };
@@ -91,12 +100,22 @@ function fixture() {
     assert.equal(response.status, 201);
     return z.object({ token: z.string() }).parse(await response.json()).token;
   }
-  return { store, call, account, project, thread, agent, context };
+  return {
+    store,
+    call,
+    account,
+    project,
+    thread,
+    agent,
+    context,
+    ready: app.request(`${service}/api/config`),
+  };
 }
 
 void test('independent accounts, project membership, viewer and agent permissions', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
@@ -164,64 +183,57 @@ void test('independent accounts, project membership, viewer and agent permission
   assert.equal(stored.thread.messages.at(-1)?.kind, 'agent');
   assert.equal(stored.thread.messages.at(-1)?.author, 'Local agent');
 });
-void test('authorization grants require proof and approval and can be consumed only once', async (t) => {
+void test('maintained OAuth device approval is scoped, rotates refresh tokens and revokes access', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
+  const outsider = await f.account('Outsider');
   const project = await f.project(owner.cookie);
-  const verifier = token();
-  const grant = z.object({ id: z.string() }).parse(
-    await (
-      await f.call('/api/auth/grants', {
-        method: 'POST',
-        body: {
-          kind: 'embed',
-          projectId: project.id,
-          parentOrigin: website,
-          challenge: challenge(verifier),
-        },
-      })
-    ).json(),
-  );
-  assert.equal(
-    (await f.call('/api/auth/exchange', { method: 'POST', body: { id: grant.id, verifier } }))
-      .status,
-    202,
-  );
+  const started = await f.call('/api/connections/start', {
+    method: 'POST',
+    body: { kind: 'embed', projectId: project.id, parentOrigin: website },
+  });
+  assert.equal(started.status, 201);
+  const device = z
+    .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+    .parse(await started.json());
   assert.equal(
     (
-      await f.call('/api/auth/exchange', {
+      await f.call('/api/connections/approve', {
         method: 'POST',
-        body: { id: grant.id, verifier: token() },
+        cookie: outsider.cookie,
+        body: { code: device.user_code, accept: true },
       })
     ).status,
     403,
   );
-  assert.equal(
-    (
-      await f.call(`/api/auth/grants/${grant.id}/approve`, {
-        method: 'POST',
-        cookie: owner.cookie,
-        body: {},
-      })
-    ).status,
-    200,
-  );
-  const exchanges = await Promise.all([
-    f.call('/api/auth/exchange', { method: 'POST', body: { id: grant.id, verifier } }),
-    f.call('/api/auth/exchange', { method: 'POST', body: { id: grant.id, verifier } }),
-  ]);
-  assert.deepEqual(exchanges.map((response) => response.status).sort(), [200, 410]);
-  const success = exchanges.find((response) => response.status === 200);
-  assert.ok(success);
-  const auth = z.object({ token: z.string() }).parse(await success.json());
+  const approval = await f.call('/api/connections/approve', {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { code: device.user_code, accept: true },
+  });
+  assert.equal(approval.status, 200, await approval.text());
+  const body = {
+    grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    client_id: device.clientId,
+    device_code: device.device_code,
+    resource: `${service}/api`,
+  };
+  const exchange = await f.call('/api/auth/oauth2/token', { method: 'POST', body });
+  const data: unknown = await exchange.json();
+  assert.equal(exchange.status, 200, JSON.stringify(data));
+  const oauth = z.object({ access_token: z.string(), refresh_token: z.string() }).parse(data);
+  assert.equal((await f.call('/api/auth/oauth2/token', { method: 'POST', body })).status, 400);
+  const me = await f.call('/api/me', { bearer: oauth.access_token });
+  assert.equal(me.status, 200, await me.text());
   assert.equal(
     (
       await f.call(`/api/projects/${project.id}`, {
         method: 'PATCH',
-        bearer: auth.token,
+        bearer: oauth.access_token,
         body: { name: 'Forbidden' },
       })
     ).status,
@@ -229,13 +241,39 @@ void test('authorization grants require proof and approval and can be consumed o
   );
   const another = await f.project(owner.cookie);
   assert.equal(
-    (await f.call(`/api/projects/${another.id}/threads`, { bearer: auth.token })).status,
+    (await f.call(`/api/projects/${another.id}/threads`, { bearer: oauth.access_token })).status,
     403,
   );
+  const refresh = await f.call('/api/auth/oauth2/token', {
+    method: 'POST',
+    body: {
+      client_id: device.clientId,
+      grant_type: 'refresh_token',
+      refresh_token: oauth.refresh_token,
+      resource: `${service}/api`,
+    },
+  });
+  const refreshData: unknown = await refresh.json();
+  assert.equal(refresh.status, 200, JSON.stringify(refreshData));
+  const renewed = z
+    .object({ access_token: z.string(), refresh_token: z.string() })
+    .parse(refreshData);
+  assert.notEqual(renewed.refresh_token, oauth.refresh_token);
+  const revoke = await f.call('/api/auth/oauth2/revoke', {
+    method: 'POST',
+    body: {
+      client_id: device.clientId,
+      token: renewed.refresh_token,
+      token_type_hint: 'refresh_token',
+    },
+  });
+  assert.equal(revoke.status, 200, await revoke.text());
+  assert.equal((await f.call('/api/me', { bearer: renewed.access_token })).status, 401);
 });
 void test('public project IDs and unregistered origins cannot grant comment access', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
@@ -279,7 +317,8 @@ void test('public project IDs and unregistered origins cannot grant comment acce
 });
 void test('concurrent replies and reactions preserve every contributor', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
@@ -319,7 +358,8 @@ void test('concurrent replies and reactions preserve every contributor', async (
 });
 void test('work is idempotent, revision-bound, and claimed once across competing runners', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
@@ -387,7 +427,8 @@ void test('work is idempotent, revision-bound, and claimed once across competing
 });
 void test('cancellation and revocation fence off stale runners', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
@@ -445,19 +486,26 @@ void test('cancellation and revocation fence off stale runners', async (t) => {
 });
 void test('oversized streaming bodies stop before authorization or JSON parsing', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
-  const response = await f.call('/api/auth/signup', {
+  const response = await f.call('/api/auth/sign-up/email', {
     method: 'POST',
     body: { name: 'Large request', padding: 'x'.repeat(40_000) },
   });
   assert.equal(response.status, 413);
-  assert.equal((await f.store.list('users', z.object({ id: z.string() }))).length, 0);
+  assert.equal(
+    z
+      .object({ count: z.number() })
+      .parse(f.store.db.prepare('SELECT COUNT(*) AS count FROM user').get()).count,
+    0,
+  );
 });
 void test('project setup is idempotent and themes reject executable values', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   const owner = await f.account();
@@ -501,7 +549,8 @@ void test('project setup is idempotent and themes reject executable values', asy
 });
 void test('document persistence and transactional compare-and-swap roll back stale writes', async (t) => {
   const f = fixture();
-  t.after(() => {
+  t.after(async () => {
+    await f.ready;
     f.store.close();
   });
   await f.store.put('test', 'a', { value: 1 });
@@ -515,4 +564,216 @@ void test('document persistence and transactional compare-and-swap roll back sta
   );
   assert.equal(applied, false);
   assert.deepEqual(await f.store.get('test', 'a', z.object({ value: z.number() })), { value: 1 });
+});
+
+void test('expired runs are fenced off and free the queue without replaying the old task', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const first = await f.thread(owner.cookie, project.id);
+  const second = await f.thread(owner.cookie, project.id);
+  const agent = await f.agent(owner.cookie, project.id);
+  async function requestWork(thread: z.infer<typeof threadSchema>, key: string) {
+    const response = await f.call(`/api/threads/${thread.id}/work`, {
+      method: 'POST',
+      cookie: owner.cookie,
+      body: { revision: thread.revision, idempotencyKey: key },
+    });
+    assert.equal(response.status, 201);
+    return z.object({ job: publicJobSchema }).parse(await response.json()).job;
+  }
+  const requested = await requestWork(first, 'first');
+  const claimed = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: agent,
+        body: {},
+      })
+    ).json(),
+  );
+  const running = await f.store.get('jobs', requested.id, jobSchema);
+  assert.ok(running);
+  await f.store.put('jobs', running.id, { ...running, leaseExpiresAt: Date.now() - 1 });
+  const next = await requestWork(second, 'second');
+  const nextClaim = await f.call(`/api/projects/${project.id}/work/claim`, {
+    method: 'POST',
+    bearer: agent,
+    body: {},
+  });
+  assert.equal(nextClaim.status, 200);
+  assert.equal(z.object({ job: publicJobSchema }).parse(await nextClaim.json()).job.id, next.id);
+  const recovered = await f.store.get('jobs', requested.id, jobSchema);
+  assert.equal(recovered?.status, 'failed');
+  assert.match(recovered.result ?? '', /Inspect its local changes/);
+  assert.equal(
+    (
+      await f.call(`/api/work/${requested.id}/complete`, {
+        method: 'POST',
+        bearer: agent,
+        body: { lease: claimed.lease, status: 'review', body: 'Stale result' },
+      })
+    ).status,
+    409,
+  );
+});
+void test('tenant-scoped pagination retains every thread without disclosing another project', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const original = await f.thread(owner.cookie, project.id);
+  const initialMessage = original.messages[0];
+  assert.ok(initialMessage);
+  for (let i = 0; i < 52; i++)
+    await f.store.insert('threads', `page-${i}`, {
+      ...original,
+      id: `page-${i}`,
+      messages: [{ ...initialMessage, body: 'Recent unrelated feedback' }],
+    });
+  const other = await f.project(owner.cookie);
+  await f.thread(owner.cookie, other.id);
+  const response = z
+    .object({ threads: z.array(threadSchema), nextBefore: z.number() })
+    .parse(
+      await (await f.call(`/api/projects/${project.id}/threads`, { cookie: owner.cookie })).json(),
+    );
+  assert.equal(response.threads.length, 50);
+  const remaining = z.object({ threads: z.array(threadSchema), nextBefore: z.null() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/threads?before=${response.nextBefore}`, {
+        cookie: owner.cookie,
+      })
+    ).json(),
+  );
+  assert.equal(remaining.threads.length, 3);
+  assert.equal(
+    new Set([...response.threads, ...remaining.threads].map((thread) => thread.id)).size,
+    53,
+  );
+  assert.ok(
+    [...response.threads, ...remaining.threads].every((thread) => thread.projectId === project.id),
+  );
+  const search = z
+    .object({ threads: z.array(threadSchema) })
+    .parse(
+      await (
+        await f.call(`/api/projects/${project.id}/threads?q=spacing`, { cookie: owner.cookie })
+      ).json(),
+    );
+  assert.equal(search.threads.length, 1);
+  assert.equal(search.threads[0]?.id, original.id);
+  const otherPage = z
+    .object({ threads: z.array(threadSchema) })
+    .parse(
+      await (
+        await f.call(
+          `/api/projects/${project.id}/threads?url=${encodeURIComponent(website + '/missing')}`,
+          { cookie: owner.cookie },
+        )
+      ).json(),
+    );
+  assert.equal(otherPage.threads.length, 0);
+});
+
+void test('account recovery revokes lost OAuth grants and agent keys while retaining this browser', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const agent = await f.agent(owner.cookie, project.id);
+  async function connect() {
+    const device = z
+      .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+      .parse(
+        await (
+          await f.call('/api/connections/start', {
+            method: 'POST',
+            body: { kind: 'personal', projectId: null, parentOrigin: null },
+          })
+        ).json(),
+      );
+    assert.equal(
+      (
+        await f.call('/api/connections/approve', {
+          method: 'POST',
+          cookie: owner.cookie,
+          body: { code: device.user_code, accept: true },
+        })
+      ).status,
+      200,
+    );
+    const response = await f.call('/api/auth/oauth2/token', {
+      method: 'POST',
+      body: {
+        client_id: device.clientId,
+        device_code: device.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        resource: `${service}/api`,
+      },
+    });
+    assert.equal(response.status, 200);
+    return {
+      clientId: device.clientId,
+      ...z
+        .object({ access_token: z.string(), refresh_token: z.string() })
+        .parse(await response.json()),
+    };
+  }
+  const lost = await connect();
+  const connections = await f.call('/api/account/connections', { cookie: owner.cookie });
+  assert.equal(
+    z
+      .object({ connections: z.array(z.object({ clientId: z.string() })) })
+      .parse(await connections.json()).connections[0]?.clientId,
+    lost.clientId,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/account/connections/${lost.clientId}`, {
+        method: 'DELETE',
+        cookie: owner.cookie,
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await f.call('/api/me', { bearer: lost.access_token })).status, 401);
+  assert.equal(
+    (
+      await f.call('/api/auth/oauth2/token', {
+        method: 'POST',
+        body: {
+          client_id: lost.clientId,
+          grant_type: 'refresh_token',
+          refresh_token: lost.refresh_token,
+          resource: `${service}/api`,
+        },
+      })
+    ).status,
+    400,
+  );
+  const next = await connect();
+  assert.equal(
+    (await f.call('/api/account/revoke-all', { method: 'POST', bearer: agent, body: {} })).status,
+    403,
+  );
+  assert.equal(
+    (await f.call('/api/account/revoke-all', { method: 'POST', cookie: owner.cookie, body: {} }))
+      .status,
+    200,
+  );
+  assert.equal((await f.call('/api/me', { bearer: next.access_token })).status, 401);
+  assert.equal((await f.call('/api/me', { bearer: agent })).status, 401);
+  assert.equal((await f.call('/api/me', { cookie: owner.cookie })).status, 200);
 });

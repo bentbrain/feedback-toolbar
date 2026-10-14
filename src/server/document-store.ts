@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AuthenticationDatabase } from './auth.js';
 import { eventSchema } from '../shared/models.js';
 import { HttpError } from './security.js';
 
@@ -12,7 +13,10 @@ export interface Database {
 }
 const rowSchema = z.object({ data: z.string() });
 export class DocumentStore {
-  constructor(readonly database: Database) {}
+  constructor(
+    readonly database: Database,
+    readonly authDatabase: AuthenticationDatabase,
+  ) {}
   async get<T>(kind: string, id: string, schema: z.ZodType<T>): Promise<T | undefined> {
     const row = (
       await this.database.execute({
@@ -28,6 +32,73 @@ export class DocumentStore {
       params: [kind],
     });
     return data.rows.map((row) => schema.parse(JSON.parse(rowSchema.parse(row).data)));
+  }
+  async query<T>(
+    kind: string,
+    schema: z.ZodType<T>,
+    filters: Partial<
+      Record<'projectId' | 'userId' | 'threadId' | 'status' | 'idempotencyKey', string>
+    >,
+    limit = 1000,
+    after = 0,
+    descending = false,
+  ): Promise<T[]> {
+    const fields = z.enum(['projectId', 'userId', 'threadId', 'status', 'idempotencyKey']);
+    const clauses = ['kind=?', 'rowid>?'];
+    const params: (string | number | null)[] = [kind, after];
+    for (const [field, value] of Object.entries(filters)) {
+      clauses.push(`json_extract(data,'$.${fields.parse(field)}')=?`);
+      params.push(value);
+    }
+    params.push(limit);
+    const result = await this.database.execute({
+      sql: `SELECT data FROM documents WHERE ${clauses.join(' AND ')} ORDER BY rowid ${descending ? 'DESC' : 'ASC'} LIMIT ?`,
+      params,
+    });
+    return result.rows.map((row) => schema.parse(JSON.parse(rowSchema.parse(row).data)));
+  }
+  async page<T>(
+    kind: string,
+    projectId: string,
+    schema: z.ZodType<T>,
+    before = Number.MAX_SAFE_INTEGER,
+    filters: {
+      url?: string | undefined;
+      status?: string | undefined;
+      search?: string | undefined;
+    } = {},
+  ) {
+    const clauses = ['kind=?', "json_extract(data,'$.projectId')=?", 'rowid<?'];
+    const params: (string | number | null)[] = [kind, projectId, before];
+    if (filters.url) {
+      clauses.push("json_extract(data,'$.context.url')=?");
+      params.push(filters.url);
+    }
+    if (filters.status) {
+      clauses.push("json_extract(data,'$.status')=?");
+      params.push(filters.status);
+    }
+    if (filters.search) {
+      clauses.push(
+        "(instr(lower(json_extract(data,'$.context.url')),lower(?))>0 OR EXISTS(SELECT 1 FROM json_each(data,'$.messages') message WHERE instr(lower(json_extract(message.value,'$.body')),lower(?))>0))",
+      );
+      params.push(filters.search, filters.search);
+    }
+    const selection =
+      kind === 'threads'
+        ? "json_set(data,'$.messageCount',json_array_length(data,'$.messages'),'$.messages',json_array(json_set(json_extract(data,'$.messages[0]'),'$.reactions',json('[]'))))"
+        : 'data';
+    const rows = (
+      await this.database.execute({
+        sql: `SELECT rowid AS position,${selection} AS data FROM documents WHERE ${clauses.join(' AND ')} ORDER BY rowid DESC LIMIT 51`,
+        params,
+      })
+    ).rows.map((row) => z.object({ position: z.number(), data: z.string() }).parse(row));
+    const visible = rows.slice(0, 50);
+    return {
+      items: visible.map((row) => schema.parse(JSON.parse(row.data))),
+      nextBefore: rows.length > 50 ? (visible.at(-1)?.position ?? null) : null,
+    };
   }
   write(kind: string, id: string, value: unknown, insert = false): Statement {
     return {

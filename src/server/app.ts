@@ -1159,6 +1159,8 @@ export function createApp(options: Options) {
   app.get('/auth', (c) =>
     c.html(html('Sign in · Feedback', 'app.js', 'styles.css', c.get('nonce'))),
   );
-  app.get('/health', (c) => c.json({ ok: true, assetVersion: options.assetVersion ?? null }));
+  app.get('/health', (c) =>
+    c.json({ ok: true, assetVersion: options.assetVersion ?? null, serviceOrigin: url }),
+  );
   return app;
 }

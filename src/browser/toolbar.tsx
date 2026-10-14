@@ -623,11 +623,11 @@ function Toolbar() {
                           setError('');
                         }}
                       >
-                        <span className="line-clamp-2 text-xs leading-6">
+                        <span data-feedback-content className="line-clamp-2 text-xs leading-6">
                           {thread.messages[0]?.body}
                         </span>
                         <span className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-                          {thread.messages[0]?.author}
+                          <span data-feedback-content>{thread.messages[0]?.author}</span>
                           <span>·</span>
                           {relativeTime(thread.updatedAt)}
                           <Badge variant="secondary" className="text-[9px]">

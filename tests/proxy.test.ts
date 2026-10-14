@@ -38,7 +38,7 @@ void test('proxy identity requires an authentic signature bound to IP, method, p
 });
 
 void test('the Vercel function replaces forged visitor headers and preserves redirects and cookies', async (t) => {
-  const { createServer } = await import('node:http');
+  const { createServer, request: send } = await import('node:http');
   const { Hono } = await import('hono');
   const { serve } = await import('@hono/node-server');
   const { z } = await import('zod');
@@ -47,8 +47,22 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   const previousSecret = process.env.FEEDBACK_PROXY_SECRET;
   const previousOrigin = process.env.FEEDBACK_API_ORIGIN;
   const previousService = process.env.FEEDBACK_URL;
+  const previousLegacy = process.env.FEEDBACK_PREVIOUS_URL;
   const backend = new Hono();
   let requests = 0;
+  let activeOrigin = '';
+  backend.get('/api/config', async (c) => {
+    assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
+    assert.equal(c.req.header('Authorization'), undefined);
+    assert.equal(c.req.header('Cookie'), undefined);
+    return c.json({ url: activeOrigin });
+  });
+  backend.post('/api/mutate', async (c) => {
+    requests++;
+    assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
+    if (c.req.header('Origin') !== activeOrigin) return c.json({ error: 'Wrong origin.' }, 403);
+    return c.json({ ok: true });
+  });
   backend.all('*', async (c) => {
     requests++;
     assert.equal(await verifiedProxyIp(c.req.raw, secret), '203.0.113.44');
@@ -70,6 +84,8 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   t.after(() => {
     server.close();
     api.close();
+    if (previousLegacy === undefined) delete process.env.FEEDBACK_PREVIOUS_URL;
+    else process.env.FEEDBACK_PREVIOUS_URL = previousLegacy;
     if (previousService === undefined) delete process.env.FEEDBACK_URL;
     else process.env.FEEDBACK_URL = previousService;
     if (previousSecret === undefined) delete process.env.FEEDBACK_PROXY_SECRET;
@@ -78,7 +94,9 @@ void test('the Vercel function replaces forged visitor headers and preserves red
     else process.env.FEEDBACK_API_ORIGIN = previousOrigin;
   });
   const origin = `http://127.0.0.1:${z.object({ port: z.number() }).parse(server.address()).port}`;
-  process.env.FEEDBACK_URL = origin;
+  activeOrigin = origin;
+  process.env.FEEDBACK_URL = 'https://toolbar.example';
+  process.env.FEEDBACK_PREVIOUS_URL = origin;
   const headers = {
     'x-vercel-forwarded-for': '203.0.113.44',
     'x-feedback-client-ip': '203.0.113.99',
@@ -99,8 +117,48 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   });
   assert.equal(large.status, 413);
   assert.equal(requests, 1);
-  process.env.FEEDBACK_URL = 'https://toolbar.example';
-  const migrated = await fetch(`${origin}/auth?user_code=fixture`, { redirect: 'manual' });
+  const publicRequest = async (path: string, method = 'GET') => {
+    const response = await new Promise<import('node:http').IncomingMessage>((resolve, reject) => {
+      const request = send(
+        `${origin}${path}`,
+        {
+          method,
+          headers: {
+            ...headers,
+            Host: 'toolbar.example',
+            Origin: method === 'POST' ? 'https://toolbar.example' : headers.Origin,
+            'x-forwarded-proto': 'https',
+          },
+        },
+        (response) => {
+          response.resume();
+          resolve(response);
+        },
+      );
+      request.on('error', reject);
+      request.end(method === 'POST' ? '{}' : undefined);
+    });
+    return { status: response.statusCode, location: response.headers.location };
+  };
+  // Publishing the new frontend cannot enable its host until the Worker changes origins.
+  for (let interruptedAttempt = 0; interruptedAttempt < 2; interruptedAttempt++) {
+    const previous = await fetch(`${origin}/api/mutate`, {
+      method: 'POST',
+      headers: { ...headers, Origin: origin },
+      body: '{}',
+    });
+    assert.equal(previous.status, 200);
+    const premature = await publicRequest('/api/mutate', 'POST');
+    assert.equal(premature.status, 403);
+  }
+  activeOrigin = 'https://toolbar.example';
+  // The adapter sees an HTTP socket; the public canonical HTTPS Host must still work.
+  const activated = await publicRequest('/api/mutate', 'POST');
+  assert.equal(activated.status, 200);
+  const canonicalGet = await publicRequest('/auth');
+  assert.equal(canonicalGet.status, 302);
+  assert.equal(canonicalGet.location, 'https://github.com/login');
+  const migrated = await fetch(`${origin}/auth?user_code=fixture`, { headers, redirect: 'manual' });
   assert.equal(migrated.status, 307);
   assert.equal(migrated.headers.get('location'), 'https://toolbar.example/auth?user_code=fixture');
   const rejected = await fetch(`${origin}/api/auth/sign-in/social`, {
@@ -109,5 +167,10 @@ void test('the Vercel function replaces forged visitor headers and preserves red
     body: '{}',
   });
   assert.equal(rejected.status, 403);
-  assert.equal(requests, 1);
+  assert.equal(requests, 5);
+  activeOrigin = 'https://unregistered.example';
+  const unsafe = await fetch(`${origin}/auth`, { headers, redirect: 'manual' });
+  assert.equal(unsafe.status, 502);
+  assert.equal(unsafe.headers.get('location'), null);
+  assert.equal(requests, 5);
 });

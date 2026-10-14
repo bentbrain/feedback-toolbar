@@ -258,4 +258,11 @@ jobs:
         env:
           FEEDBACK_URL: ${{ vars.FEEDBACK_URL }}
         run: |
-          curl --fail --retry 5 --retry-delay 5 "$FEEDBACK_URL/health"
+          node --input-type=module - <<'JS'
+          const response = await fetch(`${process.env.FEEDBACK_URL}/health`, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+          if (!response.ok) throw new Error('Production health failed.');
+          const health = await response.json();
+          if (health.ok !== true || health.assetVersion !== process.env.GITHUB_SHA || health.serviceOrigin !== process.env.FEEDBACK_URL)
+            throw new Error('The Worker has not activated this release and canonical origin.');
+          console.log('Production release and canonical origin verified.');
+          JS

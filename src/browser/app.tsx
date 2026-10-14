@@ -1629,11 +1629,15 @@ function Dashboard({
                         >
                           <Person name={first?.author ?? ''} />
                           <div className="ml-1 min-w-0 flex-1">
-                            <p className="line-clamp-2 text-xs leading-6">{first?.body}</p>
+                            <p data-feedback-content className="line-clamp-2 text-xs leading-6">
+                              {first?.body}
+                            </p>
                             <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-                              <span>{first?.author}</span>
+                              <span data-feedback-content>{first?.author}</span>
                               <span>·</span>
-                              <span>{new URL(thread.context.url).pathname}</span>
+                              <span data-feedback-content>
+                                {new URL(thread.context.url).pathname}
+                              </span>
                               <span>·</span>
                               <span>{thread.context.anchor.tag}</span>
                               <Badge variant="secondary" className="text-[9px]">
@@ -1805,6 +1809,17 @@ function Dashboard({
   );
 }
 function App() {
+  useEffect(() => {
+    const media = matchMedia('(prefers-color-scheme: dark)');
+    const update = () => {
+      applyTheme(defaultTheme);
+    };
+    update();
+    media.addEventListener('change', update);
+    return () => {
+      media.removeEventListener('change', update);
+    };
+  }, []);
   const [user, setUser] = useState<Account | null>(null);
   const [ready, setReady] = useState(false);
   const [config, setConfig] = useState({

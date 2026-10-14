@@ -68,7 +68,10 @@ export function applyTheme(theme: Theme, element: HTMLElement = document.documen
     const linear = value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
     return sum + linear * ([0.2126, 0.7152, 0.0722][index] ?? 0);
   }, 0);
-  element.style.setProperty('--primary-foreground', luminance > 0.179 ? '#171717' : '#ffffff');
+  element.style.setProperty(
+    '--primary-foreground',
+    luminance > Math.sqrt(0.05 * 1.05) - 0.05 ? '#000000' : '#ffffff',
+  );
   element.style.setProperty(
     '--radius',
     theme.radius === 'square' ? '0px' : theme.radius === 'round' ? '16px' : '10px',

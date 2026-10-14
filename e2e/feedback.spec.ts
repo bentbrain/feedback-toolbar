@@ -6,7 +6,19 @@ import { projectSchema, publicJobSchema, threadSchema } from '../src/shared/mode
 test('new user creates a project, customizes its theme, and gets the installation snippet', async ({
   page,
 }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toHaveCSS(
+    'background-color',
+    'rgb(40, 112, 255)',
+  );
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toHaveCSS(
+    'color',
+    'rgb(0, 0, 0)',
+  );
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'light');
   expect(
     await page.evaluate(async () => (await document.fonts.load('12px "Geist Mono"')).length),
   ).toBeGreaterThan(0);
@@ -26,6 +38,14 @@ test('new user creates a project, customizes its theme, and gets the installatio
   await expect(page.getByText(/data-project="prj_/)).toBeVisible();
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('tab', { name: 'dark', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Send to agent', exact: true })).toHaveCSS(
+    'background-color',
+    'rgb(40, 112, 255)',
+  );
+  await expect(page.getByRole('button', { name: 'Send to agent', exact: true })).toHaveCSS(
+    'color',
+    'rgb(0, 0, 0)',
+  );
   await page.getByRole('button', { name: 'Use #72865d', exact: true }).click();
   await page.getByRole('button', { name: 'Save appearance', exact: true }).click();
   await expect(page.getByText('All changes saved')).toBeVisible();
@@ -37,7 +57,7 @@ test('new user creates a project, customizes its theme, and gets the installatio
   if (!project) throw new Error('Project missing.');
   const createdThread = await page.request.post(`/api/projects/${project.id}/threads`, {
     data: {
-      body: 'Change the button',
+      body: 'Preserve iPhone and Japan URL casing',
       context: {
         url: 'http://localhost:44321/',
         viewport: { width: 1280, height: 800 },
@@ -57,12 +77,20 @@ test('new user creates a project, customizes its theme, and gets the installatio
   await page.request.post(`/api/threads/${thread.id}/messages`, { data: { body: 'Use magenta' } });
   await page.getByRole('button', { name: 'Feedback', exact: true }).click();
   await page.getByRole('textbox', { name: 'Search feedback' }).fill('magenta');
-  await expect(page.getByText('Change the button', { exact: true })).toBeVisible();
-  await page.getByText('Change the button', { exact: true }).click();
+  await expect(
+    page.getByText('Preserve iPhone and Japan URL casing', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('Preserve iPhone and Japan URL casing', { exact: true })).toHaveCSS(
+    'text-transform',
+    'none',
+  );
+  await page.getByText('Preserve iPhone and Japan URL casing', { exact: true }).click();
   await expect(page.getByText('Use magenta', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('textbox', { name: 'Search feedback' }).fill('absent-term');
-  await expect(page.getByText('Change the button', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Preserve iPhone and Japan URL casing', { exact: true })).toHaveCount(
+    0,
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
@@ -137,7 +165,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await page.locator('[data-feedback-id=hero-button]').click();
   await frame
     .getByLabel('What would you like to change?')
-    .fill('Please increase the spacing around this button.');
+    .fill('Please increase the spacing around this iPhone button.');
   const postedPromise = page.waitForResponse(
     (response) => response.url().includes('/threads') && response.request().method() === 'POST',
     { timeout: 5000 },
@@ -145,11 +173,19 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await frame.getByRole('button', { name: 'Post feedback' }).click();
   const posted = await postedPromise;
   expect(posted.status()).toBe(201);
-  await expect(frame.getByText('Please increase the spacing around this button.')).toBeVisible();
-  await expect(frame.getByText('Please increase the spacing around this button.')).toHaveCSS(
+  await expect(
+    frame.getByText('Please increase the spacing around this iPhone button.'),
+  ).toBeVisible();
+  await expect(frame.getByText('Please increase the spacing around this iPhone button.')).toHaveCSS(
     'text-transform',
     'none',
   );
+  await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+  await expect(frame.getByText('Please increase the spacing around this iPhone button.')).toHaveCSS(
+    'text-transform',
+    'none',
+  );
+  await frame.getByText('Please increase the spacing around this iPhone button.').click();
   await frame.getByRole('button', { name: 'React with 👍' }).click();
   await frame.getByRole('button', { name: 'Send to agent' }).click();
   await expect(

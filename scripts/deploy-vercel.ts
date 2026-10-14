@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { readRegularFile } from '../src/shared/files.js';
+import { activeServiceOrigin } from '../src/server/proxy-configuration.js';
 import { originSchema } from '../src/shared/models.js';
 
 const output = '.vercel/output';
@@ -53,6 +54,22 @@ if (process.argv.includes('--dry-run')) {
   const proxySecret = z.string().min(32).parse(process.env.FEEDBACK_PROXY_SECRET);
   const apiOrigin = originSchema.parse(process.env.FEEDBACK_API_ORIGIN);
   const serviceOrigin = originSchema.parse(process.env.FEEDBACK_URL);
+  const published = await fetch(`${serviceOrigin}/health`, {
+    redirect: 'manual',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(30_000),
+  });
+  // A provisioned domain returns 404 before its first frontend deployment.
+  const previousOrigin =
+    published.status === 404
+      ? serviceOrigin
+      : await activeServiceOrigin(apiOrigin, proxySecret, '127.0.0.1');
+  await request(`/v10/projects/${project}/env`, {
+    key: 'FEEDBACK_PREVIOUS_URL',
+    value: previousOrigin,
+    type: 'plain',
+    target: ['production'],
+  });
   await request(`/v10/projects/${project}/env`, {
     key: 'FEEDBACK_URL',
     value: serviceOrigin,

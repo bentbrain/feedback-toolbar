@@ -24,7 +24,7 @@ import { TooltipProvider } from './components/ui/tooltip.js';
 import { Toaster } from './components/ui/sonner.js';
 import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
 import type { Work } from './components/common.js';
-import { deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
+import { ConnectionError, deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
 
 const parameters = new URLSearchParams(location.search);
 const projectId = parameters.get('project') ?? '';
@@ -270,8 +270,9 @@ function Toolbar() {
       setVerified(false);
       if (
         !latestSession.current &&
-        failure instanceof ApiError &&
-        [401, 403].includes(failure.status)
+        (!connectionStore.read() ||
+          (failure instanceof ConnectionError && failure.terminal) ||
+          (failure instanceof ApiError && [401, 403].includes(failure.status)))
       ) {
         connectionStore.clear();
         latestAuth.current = null;

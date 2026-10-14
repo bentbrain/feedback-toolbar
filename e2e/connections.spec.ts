@@ -164,3 +164,75 @@ test('browsers without rotation coordination keep grants in memory and require a
     ),
   ).toBeNull();
 });
+
+test('transient OAuth refresh failures retain a grant for retry while missing grants are terminal', async ({
+  page,
+}) => {
+  const built = await build({
+    entryPoints: ['src/browser/connection-store.ts'],
+    bundle: true,
+    format: 'iife',
+    globalName: 'connectionStoreModule',
+    write: false,
+  });
+  const script = built.outputFiles[0]?.text;
+  if (!script) throw new Error('Connection store bundle missing');
+  await page.route('**/connection-test', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<script src="/connection-test.js"></script>',
+    }),
+  );
+  await page.route('**/connection-test.js', (route) =>
+    route.fulfill({ contentType: 'application/javascript', body: script }),
+  );
+  let attempts = 0;
+  await page.route('**/api/auth/oauth2/token', (route) => {
+    attempts++;
+    return attempts === 1
+      ? route.fulfill({ status: 503, json: { error: 'temporarily_unavailable' } })
+      : route.fulfill({
+          json: {
+            access_token: 'renewed-access',
+            refresh_token: 'renewed-refresh',
+            expires_in: 900,
+          },
+        });
+  });
+  await page.goto('/connection-test');
+  const result = await page.evaluate(async () => {
+    const store = window.connectionStoreModule.createConnectionStore(
+      'retry-grant',
+      location.origin,
+    );
+    store.start({
+      token: 'original-access',
+      refreshToken: 'original-refresh',
+      clientId: 'retry-client',
+      expiresAt: Date.now() - 1,
+    });
+    let transient: unknown;
+    try {
+      await store.current();
+    } catch (error) {
+      if (error instanceof Error && 'terminal' in error) transient = error.terminal;
+    }
+    const retained = store.read()?.token;
+    const renewed = (await store.current()).token;
+    store.clear();
+    let missing: unknown;
+    try {
+      await store.current();
+    } catch (error) {
+      if (error instanceof Error && 'terminal' in error) missing = error.terminal;
+    }
+    return { transient, retained, renewed, missing };
+  });
+  expect(result).toEqual({
+    transient: false,
+    retained: 'original-access',
+    renewed: 'renewed-access',
+    missing: true,
+  });
+  expect(attempts).toBe(2);
+});

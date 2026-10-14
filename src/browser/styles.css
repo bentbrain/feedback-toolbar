@@ -108,13 +108,44 @@
   background: transparent;
 }
 .toolbar-document #app {
-  height: 100vh;
+  height: 100dvh;
 }
 .toolbar-document {
   font-size: 16px;
 }
 [data-density='compact'] {
   --spacing: 0.22rem;
+}
+@media (pointer: coarse) {
+  [data-touch-target],
+  [data-slot='sidebar-menu-button'],
+  [data-slot='select-trigger'],
+  [data-slot='select-item'],
+  [data-slot='dropdown-menu-item'],
+  [data-slot='input'] {
+    min-height: 44px;
+  }
+  [data-touch-target][data-size^='icon'] {
+    min-width: 44px;
+  }
+  /* Keep editable text large enough to avoid focus zoom on mobile Safari. */
+  [data-slot='input'],
+  [data-slot='textarea'],
+  [data-slot='emoji-picker-search'] {
+    font-size: 16px;
+  }
+}
+@media (max-width: 1023px) and (max-height: 500px) {
+  [data-mobile] [data-slot='sidebar-header'] {
+    gap: 12px;
+    padding: 12px;
+  }
+  [data-mobile] [data-slot='sidebar-footer'] {
+    padding: 12px;
+  }
+  [data-mobile] [data-slot='sidebar-footer'] > div {
+    padding-top: 8px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   *,

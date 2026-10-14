@@ -14,7 +14,7 @@ export default defineConfig({
   projects: [
     {
       name: 'webkit-mobile',
-      testMatch: ['theme.spec.ts', 'reactions.spec.ts'],
+      testMatch: ['theme.spec.ts', 'reactions.spec.ts', 'mobile.spec.ts'],
       use: { ...devices['iPhone 13'] },
     },
     { name: 'chromium', testIgnore: 'theme.spec.ts', use: { ...devices['Desktop Chrome'] } },

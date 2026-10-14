@@ -210,7 +210,7 @@ test('mobile dark toolbar picker fits its iframe, inherits theme and isolates ho
   await page.addStyleTag({
     content: 'button,input{font-size:64px!important;background:red!important}',
   });
-  await expect(search).toHaveCSS('font-size', '12px');
+  await expect(search).toHaveCSS('font-size', touch ? '16px' : '12px');
   const rocket = frame.getByRole('gridcell', { name: 'Rocket', exact: true });
   if (touch) await rocket.tap();
   else await rocket.click();

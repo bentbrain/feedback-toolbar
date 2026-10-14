@@ -1036,3 +1036,180 @@ test('CSS transition events keep pins attached and stop after cancellation when 
   await waitForFrames(page, 300);
   expect((await counters(page)).geometryReads - stopped.geometryReads).toBe(0);
 });
+
+for (const clipping of [
+  { name: 'paint containment', css: 'contain:paint' },
+  { name: 'ancestor clip path', css: 'clip-path:inset(0)' },
+]) {
+  test(`paint-clip regression hides an invisible anchor under ${clipping.name}`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    const thread = await createThread(
+      page,
+      project.id,
+      '#paint-clip-anchor',
+      'Paint-clipped feedback',
+    );
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate((css) => {
+      const container = document.createElement('section');
+      container.id = 'paint-clip-container';
+      container.style.cssText = `position:fixed;left:100px;top:150px;width:120px;height:100px;${css}`;
+      const anchor = document.createElement('button');
+      anchor.id = 'paint-clip-anchor';
+      anchor.textContent = 'Clipped anchor';
+      anchor.style.cssText = 'position:absolute;left:150px;top:10px;width:80px;height:50px';
+      container.append(anchor);
+      document.body.append(container);
+    }, clipping.css);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect
+      .poll(async () =>
+        (await pinMessages(page)).some((message) =>
+          message.items.some((item) => item.threadId === thread.id),
+        ),
+      )
+      .toBe(true);
+    const rect = await page.locator('#paint-clip-anchor').boundingBox();
+    expect(rect?.x).toBe(250);
+    expect(rect?.width).toBe(80);
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+    await expect(frame.getByRole('button', { name: 'Back to feedback', exact: true })).toHaveCount(
+      0,
+    );
+  });
+}
+
+test('paint containment clips each axis without suppressing visible children or layout-only containment', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#contained-anchor', 'Contained feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.evaluate(() => {
+    const container = document.createElement('section');
+    container.id = 'contained-container';
+    container.style.cssText =
+      'position:fixed;left:100px;top:150px;width:120px;height:100px;contain:paint';
+    const anchor = document.createElement('button');
+    anchor.id = 'contained-anchor';
+    anchor.textContent = 'Contained anchor';
+    anchor.style.cssText = 'position:absolute;left:10px;top:10px;width:80px;height:50px';
+    container.append(anchor);
+    document.body.append(container);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+  await clickPin(page, 1);
+  await expect(frame.getByText('Contained feedback', { exact: true })).toBeVisible();
+  await frame.getByRole('button', { name: 'Minimize toolbar', exact: true }).click();
+  for (const contain of ['paint', 'strict', 'content']) {
+    await page.locator('#contained-container').evaluate((container, contain) => {
+      if (container instanceof HTMLElement) container.style.contain = contain;
+    }, contain);
+    await page.locator('#contained-anchor').evaluate((anchor) => {
+      if (anchor instanceof HTMLElement) {
+        anchor.style.left = '150px';
+        anchor.style.top = '10px';
+      }
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+    await page.locator('#contained-anchor').evaluate((anchor) => {
+      if (anchor instanceof HTMLElement) {
+        anchor.style.left = '10px';
+        anchor.style.top = '150px';
+      }
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+    await page.locator('#contained-anchor').evaluate((anchor) => {
+      if (anchor instanceof HTMLElement) anchor.style.top = '10px';
+    });
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+  }
+  await page.locator('#contained-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) {
+      anchor.style.position = 'fixed';
+      anchor.style.left = '150px';
+    }
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await page.locator('#contained-container').evaluate((container) => {
+    if (container instanceof HTMLElement) container.style.contain = 'layout';
+  });
+  await page.locator('#contained-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) anchor.style.left = '150px';
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(250);
+  await page.locator('#contained-container').evaluate((container) => {
+    if (container instanceof HTMLElement) {
+      container.style.contain = 'none';
+      container.style.contentVisibility = 'auto';
+    }
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  await page.locator('#contained-anchor').evaluate((anchor) => {
+    if (anchor instanceof HTMLElement) anchor.style.left = '10px';
+  });
+  await expect.poll(async () => (await pins(page)).length).toBe(1);
+});
+
+for (const clipping of [
+  { name: 'clip path', property: 'clip-path', value: 'inset(100%)' },
+  {
+    name: 'image mask',
+    property: 'mask-image',
+    value: 'linear-gradient(transparent, transparent)',
+  },
+  { name: 'classic clip', property: 'clip', value: 'rect(0px, 0px, 0px, 0px)' },
+]) {
+  test(`paint-clip safety rejects ${clipping.name} on anchors and ancestors, including stale activation`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    await createThread(page, project.id, '#shape-anchor', 'Shape-clipped feedback');
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate(() => {
+      const container = document.createElement('section');
+      container.id = 'shape-container';
+      container.style.cssText = 'position:fixed;left:100px;top:150px;width:120px;height:100px';
+      const anchor = document.createElement('button');
+      anchor.id = 'shape-anchor';
+      anchor.textContent = 'Shape anchor';
+      anchor.style.cssText = 'position:absolute;left:10px;top:10px;width:80px;height:50px';
+      container.append(anchor);
+      document.body.append(container);
+    });
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+    for (const id of ['shape-anchor', 'shape-container']) {
+      await page.evaluate(
+        ({ id, property, value }) => {
+          const root: unknown = Reflect.get(window, 'pinTestRoot');
+          if (!(root instanceof ShadowRoot)) throw new Error('Closed test root missing');
+          const element = document.getElementById(id);
+          const pin = root.querySelector('button');
+          if (!element || !(pin instanceof HTMLButtonElement))
+            throw new Error('Shape fixture missing');
+          element.style.setProperty(property, value);
+          // Activate the previously visible control before the debounced repaint.
+          pin.click();
+        },
+        { id, property: clipping.property, value: clipping.value },
+      );
+      await expect.poll(async () => (await pins(page)).length).toBe(0);
+      await expect(
+        frame.getByRole('button', { name: 'Back to feedback', exact: true }),
+      ).toHaveCount(0);
+      await page.locator(`#${id}`).evaluate((element, property) => {
+        if (element instanceof HTMLElement) element.style.removeProperty(property);
+      }, clipping.property);
+      await expect.poll(async () => (await pins(page)).length).toBe(1);
+    }
+    await clickPin(page, 1);
+    await expect(frame.getByText('Shape-clipped feedback', { exact: true })).toBeVisible();
+  });
+}

@@ -17,12 +17,43 @@ function resolveAnchor(selector: string): Element | null {
   return element && !element.closest(privateSelector) ? element : null;
 }
 
+function paintContainment(style: CSSStyleDeclaration): boolean {
+  return (
+    style.contain.split(/\s+/).some((value) => ['paint', 'strict', 'content'].includes(value)) ||
+    style.getPropertyValue('content-visibility') === 'auto'
+  );
+}
+
+function unsupportedClip(style: CSSStyleDeclaration): boolean {
+  // Paths and image masks may leave a positive box while hiding all its pixels.
+  // Without a reliable rectangular bound, omit the pin on this box and descendants.
+  const shape = [
+    'clip-path',
+    '-webkit-clip-path',
+    'mask-image',
+    '-webkit-mask-image',
+    'mask-border-source',
+    '-webkit-mask-box-image-source',
+  ].some((property) => {
+    const value = style.getPropertyValue(property);
+    return value !== '' && !value.split(',').every((part) => part.trim() === 'none');
+  });
+  const clip = style.getPropertyValue('clip');
+  return (
+    shape ||
+    ((style.position === 'absolute' || style.position === 'fixed') &&
+      clip !== '' &&
+      clip !== 'auto')
+  );
+}
+
 function fixedContainingBlock(style: CSSStyleDeclaration): boolean {
   return (
     ['transform', 'translate', 'rotate', 'scale', 'perspective', 'filter'].some((property) => {
       const value = style.getPropertyValue(property);
       return value !== '' && value !== 'none';
     }) ||
+    paintContainment(style) ||
     /(?:layout|paint|strict|content)/.test(style.contain) ||
     /(?:transform|translate|rotate|scale|perspective|filter)/.test(style.willChange)
   );
@@ -81,6 +112,7 @@ function visibleBounds(
       style.display === 'none' ||
       style.visibility !== 'visible' ||
       style.getPropertyValue('content-visibility') === 'hidden' ||
+      unsupportedClip(style) ||
       Number(style.opacity) === 0
     )
       return null;
@@ -107,8 +139,9 @@ function visibleBounds(
   for (let index = 1; index < ancestors.length; index++) {
     const ancestor = ancestors[index];
     if (!ancestor) continue;
-    const clipsX = ancestor.style.overflowX !== 'visible';
-    const clipsY = ancestor.style.overflowY !== 'visible';
+    const paintClip = paintContainment(ancestor.style);
+    const clipsX = paintClip || ancestor.style.overflowX !== 'visible';
+    const clipsY = paintClip || ancestor.style.overflowY !== 'visible';
     if (
       (!clipsX && !clipsY) ||
       ancestor.style.display === 'inline' ||

@@ -360,15 +360,22 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       )
     );
   };
-  const activeMotion = (animation: Animation) => {
+  const relevantEffect = (animation: Animation) => {
     const effect = animation.effect;
-    return (
-      (animation.playState === 'running' || animation.pending) &&
-      effect instanceof KeyframeEffect &&
+    return effect instanceof KeyframeEffect &&
       effect.target instanceof Element &&
       effect.target.isConnected &&
-      effect.getComputedTiming().progress !== null &&
       (related(effect.target) || mayReflow(effect))
+      ? effect
+      : null;
+  };
+  const activeMotion = (animation: Animation) => {
+    const effect = relevantEffect(animation);
+    return (
+      (animation.playState === 'running' || animation.pending) &&
+      animation.playbackRate !== 0 &&
+      effect !== null &&
+      effect.getComputedTiming().progress !== null
     );
   };
   const activeCssMotion = (target: Element, key: string) => {
@@ -394,27 +401,98 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       return false;
     return related(target) || cssMayReflow(target, key);
   };
-  const moving = () => {
-    for (const target of cssMotion.keys()) if (!target.isConnected) cssMotion.delete(target);
+  let motionEffects = new Map<
+    Animation,
+    { effect: KeyframeEffect; target: Element; value: string }
+  >();
+  let motionNeedsPaint = false;
+  const nativeAnimations = () => {
     const animations = browser.getAnimations?.() ?? rootBrowser.getAnimations?.({ subtree: true });
-    if (!animations) {
-      for (const [target, keys] of cssMotion) {
-        if ([...keys].some((key) => activeCssMotion(target, key))) return true;
-      }
-      return false;
+    if (animations) return animations;
+    // Use the widest available cached ancestor registry. A body subtree also
+    // includes sibling layout effects when document/root registries are absent.
+    const found = new Set<Animation>();
+    const covered: Element[] = [];
+    for (const target of [...relatedTargets].reverse().concat([...cssMotion.keys()])) {
+      if (covered.some((ancestor) => ancestor.contains(target))) continue;
+      const source: { getAnimations?: (options?: { subtree?: boolean }) => Animation[] } = target;
+      const effects = source.getAnimations?.({ subtree: true });
+      if (!effects) continue;
+      covered.push(target);
+      for (const animation of effects) found.add(animation);
     }
-    return animations.some(activeMotion);
+    return covered.length ? [...found] : undefined;
+  };
+  const inspectMotion = () => {
+    for (const target of cssMotion.keys()) if (!target.isConnected) cssMotion.delete(target);
+    const animations = nativeAnimations();
+    if (!animations) {
+      const changed = motionEffects.size > 0;
+      motionEffects.clear();
+      const active = [...cssMotion].some(([target, keys]) =>
+        [...keys].some((key) => activeCssMotion(target, key)),
+      );
+      // Without native effect snapshots, CSS lifecycle events remain the bound
+      // for sampling. A running layout transition still needs frame paints.
+      return { active, changed: changed || active };
+    }
+    const current = new Map<
+      Animation,
+      { effect: KeyframeEffect; target: Element; value: string }
+    >();
+    let active = false;
+    let changed = false;
+    for (const animation of animations) {
+      const effect = relevantEffect(animation);
+      if (!effect || !(effect.target instanceof Element)) continue;
+      const timing = effect.getComputedTiming();
+      if (timing.progress === null) continue;
+      // Completed fill effects and paused effects still affect layout. Compare
+      // their applied state as well as timing/keyframes without reading geometry.
+      const snapshot = {
+        effect,
+        target: effect.target,
+        value: JSON.stringify([
+          timing.progress,
+          timing.currentIteration,
+          animation.playState,
+          animation.pending,
+          animation.playbackRate,
+          effect.getTiming(),
+          effect.getKeyframes(),
+        ]),
+      };
+      const previous = motionEffects.get(animation);
+      if (
+        previous?.effect !== snapshot.effect ||
+        previous.target !== snapshot.target ||
+        previous.value !== snapshot.value
+      )
+        changed = true;
+      current.set(animation, snapshot);
+      if ((animation.playState === 'running' || animation.pending) && animation.playbackRate !== 0)
+        active = true;
+    }
+    // Cancellation/removal can drop an effect from the registry without a DOM
+    // mutation or resize. Its former layout needs one final cached-anchor paint.
+    for (const animation of motionEffects.keys()) if (!current.has(animation)) changed = true;
+    motionEffects = current;
+    return { active, changed };
   };
   const sampleMotion = () => {
     motionFrame = undefined;
     if (destroyed || !entries.length) return;
+    const { active, changed } = inspectMotion();
     // Resolve selectors on mutations only; animation frames read cached anchors.
-    paint(false);
-    if (moving()) motionFrame = requestAnimationFrame(sampleMotion);
+    if (changed || motionNeedsPaint) paint(false);
+    motionNeedsPaint = false;
+    if (active) motionFrame = requestAnimationFrame(sampleMotion);
   };
   const detectMotion = () => {
-    if (!destroyed && entries.length && motionFrame === undefined && moving())
-      motionFrame = requestAnimationFrame(sampleMotion);
+    if (destroyed || !entries.length || motionFrame !== undefined) return;
+    const { active, changed } = inspectMotion();
+    motionNeedsPaint = changed;
+    if (active || changed) motionFrame = requestAnimationFrame(sampleMotion);
   };
   const motionEvent = (event: Event) => {
     if (!(event.target instanceof Element) || !entries.length) return;
@@ -491,6 +569,8 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
         if (motionFrame !== undefined) cancelAnimationFrame(motionFrame);
         motionFrame = undefined;
         cssMotion.clear();
+        motionEffects.clear();
+        motionNeedsPaint = false;
       }
     },
     theme(accent: string, mode: string, radius: string) {
@@ -507,6 +587,8 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       clearInterval(motionPoll);
       if (motionFrame !== undefined) cancelAnimationFrame(motionFrame);
       cssMotion.clear();
+      motionEffects.clear();
+      motionNeedsPaint = false;
       observer.disconnect();
       observed.clear();
       anchors = [];

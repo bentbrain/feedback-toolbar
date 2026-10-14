@@ -1469,3 +1469,309 @@ test('keyboard focus remains on a pin while layout animations redraw its positio
   await page.keyboard.press('Enter');
   await expect(frame.getByText('Focused pin feedback', { exact: true })).toBeVisible();
 });
+
+async function openLifecyclePins(page: Page, registry = 'document') {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#lifecycle-anchor', 'Animation lifecycle feedback');
+  await page.route(new URL('/embed-module.js', service).href, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), 'access-control-allow-origin': website },
+    });
+  });
+  await page.goto(`${website}/`);
+  await page.evaluate(
+    async ({ registry, projectId, serviceOrigin, moduleAddress }) => {
+      if (registry !== 'document')
+        Object.defineProperty(document, 'getAnimations', { value: undefined, configurable: true });
+      if (registry === 'ancestor')
+        Object.defineProperty(document.documentElement, 'getAnimations', {
+          value: undefined,
+          configurable: true,
+        });
+      const row = document.createElement('section');
+      row.style.cssText = 'position:fixed;display:flex;left:20px;top:160px;width:500px;height:50px';
+      const spacer = document.createElement('div');
+      spacer.id = 'lifecycle-spacer';
+      spacer.style.cssText = 'width:0px;height:50px;flex-shrink:0';
+      const anchor = document.createElement('button');
+      anchor.id = 'lifecycle-anchor';
+      anchor.textContent = 'Anchor';
+      anchor.style.cssText = 'width:100px;height:50px;flex-shrink:0';
+      row.append(spacer, anchor);
+      document.body.append(row);
+      const library: unknown = await import(moduleAddress);
+      if (typeof library !== 'object' || library === null) throw new Error('Embed module missing');
+      const mount: unknown = Reflect.get(library, 'mountFeedback');
+      if (typeof mount !== 'function') throw new Error('Embed mount function missing');
+      const controller: unknown = Reflect.apply(mount, null, [
+        { server: serviceOrigin, projectId },
+      ]);
+      if (typeof controller !== 'object' || controller === null)
+        throw new Error('Embed controller missing');
+      const destroy: unknown = Reflect.get(controller, 'destroy');
+      if (typeof destroy !== 'function') throw new Error('Embed destroy function missing');
+      Object.defineProperty(window, 'pinTestLifecycleDestroy', {
+        value() {
+          Reflect.apply(destroy, controller, []);
+        },
+      });
+    },
+    {
+      registry,
+      projectId: project.id,
+      serviceOrigin: service.origin,
+      moduleAddress: new URL('/embed-module.js', service).href,
+    },
+  );
+  await expect(page.locator('[data-feedback-host]')).toBeVisible({ timeout: 15_000 });
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar frame missing');
+  await expect(
+    frame.getByRole('switch', { name: 'Show feedback pins', exact: true }),
+  ).toBeEnabled();
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 300);
+  return frame;
+}
+
+test('short sibling Web Animation keeps the pin attached after finishing between registry polls', async ({
+  page,
+}) => {
+  await openLifecyclePins(page);
+  const reads = (await counters(page)).animationReads;
+  // Start just after an idle poll so the complete 80ms animation fits in the 200ms gap.
+  await page.waitForFunction(
+    (reads) => {
+      const value: unknown = Reflect.get(window, 'pinTestCounters');
+      if (typeof value !== 'object' || value === null) return false;
+      const current: unknown = Reflect.get(value, 'animationReads');
+      return typeof current === 'number' && current > reads;
+    },
+    reads,
+    { polling: 'raf' },
+  );
+  await page.locator('#lifecycle-spacer').evaluate(async (spacer) => {
+    const motion = spacer.animate([{ width: '0px' }, { width: '300px' }], {
+      duration: 80,
+      fill: 'forwards',
+    });
+    await motion.finished;
+  });
+  await waitForFrames(page, 500);
+  expect(await intermediatePosition(page, 'lifecycle-anchor')).toEqual({ anchor: 320, pin: 320 });
+  const stable = await counters(page);
+  await waitForFrames(page, 500);
+  const after = await counters(page);
+  expect(after.geometryReads - stable.geometryReads).toBe(0);
+  expect(after.selectorReads - stable.selectorReads).toBe(0);
+});
+
+test('cancelling a paused sibling Web Animation returns the pin to its anchor', async ({
+  page,
+}) => {
+  await openLifecyclePins(page);
+  await page.locator('#lifecycle-spacer').evaluate((spacer) => {
+    const motion = spacer.animate([{ width: '0px' }, { width: '300px' }], {
+      duration: 3000,
+      fill: 'forwards',
+    });
+    Object.defineProperty(window, 'pinTestLifecycleMotion', { value: motion });
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBeGreaterThan(80);
+  await page.evaluate(() => {
+    const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+    if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+    motion.pause();
+  });
+  await waitForFrames(page, 300);
+  const paused = await intermediatePosition(page, 'lifecycle-anchor');
+  expect(paused.anchor).toBeGreaterThan(80);
+  expect(Math.abs(paused.pin - paused.anchor)).toBeLessThan(1);
+  const stable = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - stable.geometryReads).toBe(0);
+  await page.evaluate(() => {
+    const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+    if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+    motion.cancel();
+  });
+  await waitForFrames(page, 500);
+  expect(await intermediatePosition(page, 'lifecycle-anchor')).toEqual({ anchor: 20, pin: 20 });
+  const cancelled = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - cancelled.geometryReads).toBe(0);
+});
+
+for (const registry of ['document', 'root', 'ancestor']) {
+  test(`retained Web Animation seeks, timing, keyframes and effect removal reconcile with ${registry} registry`, async ({
+    page,
+  }) => {
+    const frame = await openLifecyclePins(page, registry);
+    await page.locator('#lifecycle-spacer').evaluate((spacer) => {
+      const motion = spacer.animate([{ width: '0px' }, { width: '300px' }], {
+        duration: 1000,
+        fill: 'both',
+      });
+      motion.pause();
+      motion.currentTime = 500;
+      Object.defineProperty(window, 'pinTestLifecycleMotion', { value: motion });
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(170);
+    await waitForFrames(page, 300);
+    const before = await counters(page);
+    await waitForFrames(page, 300);
+    expect((await counters(page)).geometryReads - before.geometryReads).toBe(0);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+      motion.currentTime = 250;
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(95);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+      motion.effect?.updateTiming({ duration: 500 });
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(170);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      if (!(motion instanceof Animation) || !(motion.effect instanceof KeyframeEffect))
+        throw new Error('Missing lifecycle effect');
+      motion.effect.setKeyframes([{ width: '0px' }, { width: '200px' }]);
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(120);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      const spacer = document.getElementById('lifecycle-spacer');
+      if (!(motion instanceof Animation) || !spacer) throw new Error('Missing lifecycle motion');
+      motion.effect = new KeyframeEffect(spacer, [{ width: '0px' }, { width: '400px' }], {
+        duration: 500,
+        fill: 'both',
+      });
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(220);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+      motion.effect = null;
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+    await waitForFrames(page, 300);
+    const removed = await counters(page);
+    await waitForFrames(page, 300);
+    expect((await counters(page)).geometryReads - removed.geometryReads).toBe(0);
+    // Polling and frame updates throughout this sequence use the original anchors.
+    expect(removed.selectorReads - before.selectorReads).toBe(0);
+    await frame.getByRole('switch', { name: 'Hide feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(0);
+    const empty = await counters(page);
+    await page.locator('#lifecycle-spacer').evaluate(async (spacer) => {
+      await spacer.animate([{ width: '0px' }, { width: '300px' }], {
+        duration: 80,
+        fill: 'forwards',
+      }).finished;
+    });
+    await waitForFrames(page, 400);
+    expect(await counters(page)).toEqual(empty);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(320);
+    await waitForFrames(page, 300);
+    await page.evaluate(() => {
+      const destroy: unknown = Reflect.get(window, 'pinTestLifecycleDestroy');
+      if (typeof destroy !== 'function') throw new Error('Lifecycle destroy function missing');
+      Reflect.apply(destroy, null, []);
+    });
+    await expect(page.locator('[data-feedback-host]')).toHaveCount(0);
+    await waitForFrames(page, 100);
+    const destroyed = await counters(page);
+    await page.locator('#lifecycle-spacer').evaluate((spacer) => {
+      for (const animation of spacer.getAnimations()) animation.cancel();
+    });
+    await waitForFrames(page, 400);
+    expect(await counters(page)).toEqual(destroyed);
+  });
+}
+
+for (const registry of ['root', 'ancestor']) {
+  test(`short finished and cancelled fill effects reconcile with ${registry} fallback registry`, async ({
+    page,
+  }) => {
+    await openLifecyclePins(page, registry);
+    await page.locator('#lifecycle-spacer').evaluate(async (spacer) => {
+      const motion = spacer.animate([{ width: '0px' }, { width: '300px' }], {
+        duration: 80,
+        fill: 'forwards',
+      });
+      Object.defineProperty(window, 'pinTestLifecycleMotion', { value: motion });
+      await motion.finished;
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(320);
+    await waitForFrames(page, 300);
+    const finished = await counters(page);
+    await waitForFrames(page, 300);
+    expect((await counters(page)).geometryReads - finished.geometryReads).toBe(0);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+      motion.pause();
+      motion.currentTime = 40;
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(170);
+    await page.evaluate(() => {
+      const motion: unknown = Reflect.get(window, 'pinTestLifecycleMotion');
+      if (!(motion instanceof Animation)) throw new Error('Missing lifecycle animation');
+      motion.cancel();
+    });
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+    expect(await intermediatePosition(page, 'lifecycle-anchor')).toEqual({ anchor: 20, pin: 20 });
+    await waitForFrames(page, 300);
+    const cancelled = await counters(page);
+    await waitForFrames(page, 300);
+    expect((await counters(page)).geometryReads - cancelled.geometryReads).toBe(0);
+    expect(cancelled.selectorReads - finished.selectorReads).toBe(0);
+  });
+}
+
+test('CSS lifecycle fallback still samples layout motion when every animation registry is unavailable', async ({
+  page,
+}) => {
+  await openLifecyclePins(page, 'ancestor');
+  await page.evaluate(() => {
+    const spacer = document.getElementById('lifecycle-spacer');
+    const anchor = document.getElementById('lifecycle-anchor');
+    if (!(spacer instanceof HTMLElement) || !anchor || !spacer.parentElement)
+      throw new Error('Missing lifecycle layout');
+    for (const element of [document.body, spacer.parentElement, spacer, anchor])
+      Object.defineProperty(element, 'getAnimations', { value: undefined, configurable: true });
+    spacer.style.transition = 'width 3s linear';
+  });
+  await waitForFrames(page, 100);
+  await page.locator('#lifecycle-spacer').evaluate((spacer) => {
+    if (spacer instanceof HTMLElement) spacer.style.width = '300px';
+  });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'lifecycle-anchor')).anchor)
+    .toBeGreaterThan(100);
+  const before = await counters(page);
+  for (let sample = 0; sample < 3; sample++) {
+    const position = await intermediatePosition(page, 'lifecycle-anchor');
+    expect(position.anchor).toBeLessThan(320);
+    expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+    await waitForFrames(page, 100);
+  }
+  expect((await counters(page)).selectorReads - before.selectorReads).toBe(0);
+  await page.locator('#lifecycle-spacer').evaluate((spacer) => {
+    if (!(spacer instanceof HTMLElement)) throw new Error('Missing lifecycle spacer');
+    spacer.style.transition = 'none';
+    spacer.style.width = '0px';
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 300);
+  const stable = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - stable.geometryReads).toBe(0);
+});

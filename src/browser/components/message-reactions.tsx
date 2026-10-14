@@ -128,7 +128,7 @@ export function MessageReactions({
     );
     try {
       await onReact(emoji);
-      if (actorId && !removing) recordEmojiChoice(actorId, emoji);
+      if (actorId && !removing) await recordEmojiChoice(actorId, emoji);
     } finally {
       reacting.current = false;
       setPending(null);

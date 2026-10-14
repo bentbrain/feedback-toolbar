@@ -48,6 +48,7 @@ const app = createApp({
         : undefined,
   },
   asset: (file) => readFile(file),
+  dashboard: await readFile('dist/dashboard/client/index.html', 'utf8'),
 });
 const server = serve({
   fetch: (request, env) => {

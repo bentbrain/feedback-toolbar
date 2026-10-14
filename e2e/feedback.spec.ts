@@ -104,10 +104,10 @@ test('new user creates a project, customizes its theme, and gets the installatio
   await page.getByLabel('Email address').fill(`${randomUUID()}@example.invalid`);
   await page.getByLabel('Password', { exact: true }).fill(randomUUID());
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
-  await page.getByRole('button', { name: 'Account security', exact: true }).click();
+  await page.getByRole('link', { name: 'Account security', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Account security' })).toBeVisible();
   await expect(page.getByText('No connected tools or websites.')).toBeVisible();
-  await page.getByRole('button', { name: 'Feedback', exact: true }).click();
+  await page.getByRole('link', { name: 'Feedback', exact: true }).click();
   await page.getByRole('button', { name: 'Create your first project' }).click();
   await page.getByLabel('Project name').fill('Forma website');
   await page.getByRole('button', { name: 'Create project', exact: true }).click();
@@ -138,7 +138,7 @@ test('new user creates a project, customizes its theme, and gets the installatio
     await page.keyboard.press('Escape');
   }
   await page.emulateMedia({ colorScheme: 'light' });
-  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await page.getByRole('link', { name: 'Appearance', exact: true }).click();
   const darkTab = page.getByRole('tab', { name: 'dark', exact: true });
   const lightTab = page.getByRole('tab', { name: 'light', exact: true });
   const systemTab = page.getByRole('tab', { name: 'system', exact: true });
@@ -212,7 +212,7 @@ test('new user creates a project, customizes its theme, and gets the installatio
   });
   const thread = z.object({ thread: threadSchema }).parse(await createdThread.json()).thread;
   await page.request.post(`/api/threads/${thread.id}/messages`, { data: { body: 'Use magenta' } });
-  await page.getByRole('button', { name: 'Feedback', exact: true }).click();
+  await page.getByRole('link', { name: 'Feedback', exact: true }).click();
   const search = page.getByRole('textbox', { name: 'Search feedback' });
   await search.fill('magenta');
   await expect.poll(() => textContrast(search)).toBeGreaterThanOrEqual(4.5);

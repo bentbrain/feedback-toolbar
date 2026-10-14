@@ -189,7 +189,7 @@ for (const viewport of [
         if (mobile) await toggle.click();
         await page
           .getByRole('navigation', { name: 'Project navigation' })
-          .getByRole('button', { name: section.navigation, exact: true })
+          .getByRole('link', { name: section.navigation, exact: true })
           .click();
         await expect(
           page.getByRole('heading', { name: section.heading, exact: true }),
@@ -257,7 +257,7 @@ test('sidebar toggles by keyboard and keeps mobile navigation scrollable in a sh
   expect(await scrollArea.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
     true,
   );
-  await dialog.getByRole('button', { name: 'Account security', exact: true }).click();
+  await dialog.getByRole('link', { name: 'Account security', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Account security', exact: true })).toBeVisible();
   await expect(dialog).toBeHidden();
   await expect(toggle).toBeFocused();
@@ -312,7 +312,7 @@ test('native 200% browser zoom reflows dashboard sections and keeps navigation u
       await page.getByRole('button', { name: 'Toggle navigation' }).click();
       await page
         .getByRole('navigation', { name: 'Project navigation' })
-        .getByRole('button', { name: section.navigation, exact: true })
+        .getByRole('link', { name: section.navigation, exact: true })
         .click();
       await expect(page.getByRole('heading', { name: section.heading, exact: true })).toBeVisible();
       await expectUnclippedControls(page);

@@ -1,6 +1,8 @@
-import { mkdir, copyFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, copyFile, writeFile, readFile, rm } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { retainActiveAssets } from './release-assets.js';
+import { browserAssetSource, localBrowserAssets } from './release-artifacts.js';
+import { dirname } from 'node:path';
 import { originSchema } from '../src/shared/models.js';
 
 const api = originSchema.parse(process.env.FEEDBACK_API_ORIGIN ?? 'http://localhost:8787');
@@ -8,6 +10,13 @@ const service = originSchema.parse(process.env.FEEDBACK_URL ?? 'http://localhost
 const target = '.vercel/output';
 const release = process.env.GITHUB_SHA;
 if (release && !/^[a-f0-9]{40}$/.test(release)) throw new Error('Invalid release identifier.');
+if (release) {
+  const document = await readFile('dist/dashboard/client/index.html', 'utf8');
+  if (!document.includes(`/assets/${release}/dashboard-assets/`))
+    throw new Error(
+      'Dashboard asset base differs from the publication release. Rebuild with the same GITHUB_SHA.',
+    );
+}
 await rm(target, { recursive: true, force: true });
 await mkdir(`${target}/static`, { recursive: true });
 await mkdir(`${target}/functions/proxy.func`, { recursive: true });
@@ -33,9 +42,16 @@ await writeFile(
   }),
 );
 if (release) await mkdir(`${target}/static/assets/${release}`, { recursive: true });
-for (const asset of ['app.js', 'toolbar.js', 'embed.js', 'embed-module.js', 'styles.css']) {
-  await copyFile(`dist/${asset}`, `${target}/static/${asset}`);
-  if (release) await copyFile(`dist/${asset}`, `${target}/static/assets/${release}/${asset}`);
+for (const asset of await localBrowserAssets('dist')) {
+  const source = browserAssetSource('dist', asset);
+  const destination = `${target}/static/${asset}`;
+  await mkdir(dirname(destination), { recursive: true });
+  await copyFile(source, destination);
+  if (release) {
+    const versioned = `${target}/static/assets/${release}/${asset}`;
+    await mkdir(dirname(versioned), { recursive: true });
+    await copyFile(source, versioned);
+  }
 }
 if (process.argv.includes('--retain-active')) {
   if (!release) throw new Error('A deployment release identifier is required.');

@@ -34,6 +34,7 @@ interface Options {
   asset?: (file: string) => Promise<Uint8Array>;
   nonce?: string;
   assetVersion?: string | undefined;
+  dashboard?: string;
 }
 interface Environment {
   Variables: { principal: Credential; user: User; nonce: string; requestId: string };
@@ -330,7 +331,7 @@ export function createApp(options: Options) {
     c.header('X-Request-ID', requestId);
     c.header(
       'Content-Security-Policy',
-      `default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
     );
     if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(c.req.method)) {
       const origin = c.req.header('Origin');
@@ -1213,7 +1214,6 @@ export function createApp(options: Options) {
   const html = (title: string, entry: string, css: string, nonce: string) =>
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csp-nonce" content="${nonce}"><title>${title}</title><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="${assetPrefix}${css}"></head><body><div id="app"></div><script type="module" src="${assetPrefix}${entry}"></script></body></html>`;
   for (const [path, file, type] of [
-    ['/app.js', 'dist/app.js', 'text/javascript'],
     ['/toolbar.js', 'dist/toolbar.js', 'text/javascript'],
     ['/embed.js', 'dist/embed.js', 'text/javascript'],
     ['/embed-module.js', 'dist/embed-module.js', 'text/javascript'],
@@ -1229,6 +1229,35 @@ export function createApp(options: Options) {
         : c.notFound();
     });
   }
+  const dashboardAsset = async (c: import('hono').Context<Environment>) => {
+    const file = c.req.param('file');
+    const version = c.req.param('version');
+    if (!file || !/^[A-Za-z0-9_.-]+\.(js|css|woff2?)$/.test(file) || !options.asset)
+      return c.notFound();
+    if (
+      version &&
+      (!/^[a-f0-9]{40}$/.test(version) || !options.dashboard?.includes(`/assets/${version}/`))
+    )
+      return c.notFound();
+    const type = file.endsWith('.js')
+      ? 'text/javascript'
+      : file.endsWith('.css')
+        ? 'text/css'
+        : file.endsWith('.woff2')
+          ? 'font/woff2'
+          : 'font/woff';
+    try {
+      const contents = await options.asset(`dist/dashboard/client/dashboard-assets/${file}`);
+      c.header('Content-Type', type);
+      return c.body(new Uint8Array(contents));
+    } catch (failure) {
+      if (failure instanceof Error && 'code' in failure && failure.code === 'ENOENT')
+        return c.notFound();
+      throw failure;
+    }
+  };
+  app.get('/dashboard-assets/:file', dashboardAsset);
+  app.get('/assets/:version/dashboard-assets/:file', dashboardAsset);
   app.get('/toolbar', async (c) => {
     const project = requireValue(
       await store.get('projects', c.req.query('project') ?? '', projectSchema),
@@ -1242,10 +1271,27 @@ export function createApp(options: Options) {
     );
     return c.html(html('Feedback toolbar', 'toolbar.js', 'styles.css', c.get('nonce')));
   });
-  app.get('/', (c) => c.html(html('toolbar.bent.build', 'app.js', 'styles.css', c.get('nonce'))));
-  app.get('/auth', (c) =>
-    c.html(html('Sign in · Feedback', 'app.js', 'styles.css', c.get('nonce'))),
-  );
+  const dashboard = (nonce: string) =>
+    options.dashboard
+      ?.replaceAll('__FEEDBACK_NONCE__', nonce)
+      .replace(/<script\b([^>]*)>/g, (tag: string, attributes: string) =>
+        attributes.includes(' nonce=') ? tag : `<script nonce="${nonce}"${attributes}>`,
+      );
+  for (const path of [
+    '/',
+    '/feedback',
+    '/install',
+    '/appearance',
+    '/people',
+    '/agents',
+    '/account',
+    '/auth',
+  ]) {
+    app.get(path, (c) => {
+      const document = dashboard(c.get('nonce'));
+      return document ? c.html(document) : c.notFound();
+    });
+  }
   app.get('/health', (c) =>
     c.json({ ok: true, assetVersion: options.assetVersion ?? null, serviceOrigin: url }),
   );

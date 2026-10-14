@@ -6,6 +6,7 @@ export default defineConfig(
   {
     ignores: [
       'dist/**',
+      '.react-router/**',
       'node_modules/**',
       '.data/**',
       '.wrangler/**',

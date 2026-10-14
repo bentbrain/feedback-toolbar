@@ -254,8 +254,31 @@ void test('real prebuilt output pins the compiled Node proxy to Sydney and prese
   await symlink(join(root, 'assets'), join(directory, 'assets'), 'dir');
   await mkdir(join(directory, 'dist'));
   const version = '4'.repeat(40);
-  for (const file of releaseFiles)
-    await writeFile(join(directory, 'dist', file), `browser:${file}`);
+  const paths = [
+    'toolbar.js',
+    'embed.js',
+    'embed-module.js',
+    'styles.css',
+    'dashboard-assets/entry-HASH.js',
+    'dashboard-assets/feedback-HASH.js',
+    'dashboard-assets/styles-HASH.css',
+    'dashboard-assets/geist-HASH.woff2',
+  ];
+  await mkdir(join(directory, 'dist/dashboard/client/dashboard-assets'), { recursive: true });
+  await writeFile(
+    join(directory, 'dist/dashboard/client/index.html'),
+    `<script src="/assets/${version}/dashboard-assets/entry-HASH.js"></script>`,
+  );
+  await writeFile(join(directory, 'dist/browser-assets.json'), JSON.stringify(paths));
+  for (const file of paths)
+    await writeFile(
+      join(
+        directory,
+        file.startsWith('dashboard-assets/') ? 'dist/dashboard/client' : 'dist',
+        file,
+      ),
+      file.endsWith('.woff2') ? Buffer.from([0, 255, 128, 1]) : `browser:${file}`,
+    );
   const run = promisify(execFile);
   await run(
     process.execPath,
@@ -282,11 +305,28 @@ void test('real prebuilt output pins the compiled Node proxy to Sydney and prese
     );
   assert.deepEqual(config.regions, ['syd1']);
   assert.ok((await readFile(join(output, 'functions/proxy.func', config.handler))).length > 0);
-  for (const file of releaseFiles)
+  for (const file of paths)
     assert.deepEqual(
       await readFile(join(output, 'static/assets', version, file)),
-      await readFile(join(directory, 'dist', file)),
+      await readFile(
+        join(
+          directory,
+          file.startsWith('dashboard-assets/') ? 'dist/dashboard/client' : 'dist',
+          file,
+        ),
+      ),
     );
+  await assert.rejects(
+    run(
+      process.execPath,
+      ['--import', import.meta.resolve('tsx'), join(root, 'scripts/build-vercel.ts')],
+      {
+        cwd: directory,
+        env: { ...process.env, GITHUB_SHA: '5'.repeat(40) },
+      },
+    ),
+    /Dashboard asset base differs/,
+  );
 });
 
 void test('a response arriving after the readiness deadline cannot authorize publication', async (t) => {

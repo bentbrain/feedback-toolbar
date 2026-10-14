@@ -9,12 +9,13 @@ import {
   defaultTheme,
   projectSchema,
   publicJobSchema,
+  publicUserSchema,
   themeSchema,
   threadSchema,
 } from '../shared/models.js';
 import type { Theme, Thread } from '../shared/models.js';
 import { createConnectionStore } from './connection-store.js';
-import { applyTheme, messageOf, relativeTime, request, rootElement } from './ui.js';
+import { ApiError, applyTheme, messageOf, relativeTime, request, rootElement } from './ui.js';
 import { Button } from './components/ui/button.js';
 import { Badge } from './components/ui/badge.js';
 import { Textarea } from './components/ui/textarea.js';
@@ -23,11 +24,13 @@ import { TooltipProvider } from './components/ui/tooltip.js';
 import { Toaster } from './components/ui/sonner.js';
 import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
 import type { Work } from './components/common.js';
-import { deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
+import { ConnectionError, deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
 
 const parameters = new URLSearchParams(location.search);
 const projectId = parameters.get('project') ?? '';
 const parentOrigin = parameters.get('origin') ?? '';
+const connectRequested = parameters.get('connect') === '1';
+const embedHeaders = { 'x-feedback-project': projectId, 'x-feedback-origin': parentOrigin };
 const send = (data: unknown) => {
   parent.postMessage(data, parentOrigin);
 };
@@ -48,7 +51,22 @@ const connectionStore = createConnectionStore(
 function Toolbar() {
   const [expanded, setExpanded] = useState(false);
   const [mini, setMini] = useState(false);
-  const [auth, setAuth] = useState(connectionStore.read);
+  const [connection, setAuth] = useState(connectionStore.read);
+  const [sessionUser, setSessionUser] = useState<z.infer<typeof publicUserSchema> | null>(null);
+  const [verified, setVerified] = useState(false);
+  const [connecting, setConnecting] = useState(connectRequested);
+  const [cookieStatus, setCookieStatus] = useState<
+    'checking' | 'available' | 'unavailable' | 'blocked'
+  >('checking');
+  const auth = useMemo(
+    () =>
+      sessionUser && cookieStatus === 'available'
+        ? { user: sessionUser }
+        : cookieStatus === 'unavailable'
+          ? connection
+          : null,
+    [sessionUser, connection, cookieStatus],
+  );
   const [projectName, setProjectName] = useState('Feedback');
   const [theme, setTheme] = useState<Theme>(defaultTheme);
   const [overrides, setOverrides] = useState<z.infer<typeof themeOverridesSchema>>({});
@@ -84,9 +102,12 @@ function Toolbar() {
     () => themeSchema.parse({ ...theme, ...overrides }),
     [theme, overrides],
   );
-  const latestAuth = useRef(auth);
+  const latestAuth = useRef(connection);
+  const latestSession = useRef(sessionUser);
+  latestSession.current = sessionUser;
   const api = useCallback(
     async (path: string, options: { method?: string; body?: unknown } = {}) => {
+      if (latestSession.current) return request(path, { ...options, headers: embedHeaders });
       const current = await connectionStore.current();
       if (current.token !== latestAuth.current?.token) {
         latestAuth.current = current;
@@ -150,8 +171,58 @@ function Toolbar() {
       .parse(projects)
       .projects.find((item) => item.id === projectId);
     setRole(own?.role ?? 'viewer');
-    if (own) setTheme(own.theme);
+    setVerified(Boolean(own));
+    if (own) {
+      setTheme(own.theme);
+      setConnecting(false);
+    }
   }, [auth, api, page, activeId]);
+  useEffect(() => {
+    let cancelled = false;
+    let checking = false;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const response = z
+          .object({ user: publicUserSchema, kind: z.literal('embed') })
+          .parse(await request('/api/me', { headers: embedHeaders }));
+        if (!cancelled) {
+          setCookieStatus('available');
+          setSessionUser((previous) =>
+            previous?.id === response.user.id && previous.name === response.user.name
+              ? previous
+              : response.user,
+          );
+        }
+      } catch (failure) {
+        if (!cancelled) {
+          setSessionUser(null);
+          setCookieStatus(
+            failure instanceof ApiError && failure.status === 401 ? 'unavailable' : 'blocked',
+          );
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    void check();
+    const timer = setInterval(() => void check(), 5000);
+    const focus = () => void check();
+    window.addEventListener('focus', focus);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener('focus', focus);
+    };
+  }, []);
+  useEffect(() => {
+    send({ type: 'feedback:visibility', visible: Boolean(auth && verified) || connecting });
+    if (!auth) {
+      setVerified(false);
+      send({ type: 'feedback:clear' });
+    }
+  }, [auth, verified, connecting]);
   useEffect(() => {
     document.documentElement.classList.add('toolbar-document');
     void request(
@@ -196,7 +267,14 @@ function Toolbar() {
   useEffect(() => {
     if (!auth) return;
     const fail = (failure: unknown) => {
-      if (!connectionStore.read()) {
+      setVerified(false);
+      if (
+        !latestSession.current &&
+        (!connectionStore.read() ||
+          (failure instanceof ConnectionError && failure.terminal) ||
+          (failure instanceof ApiError && [401, 403].includes(failure.status)))
+      ) {
+        connectionStore.clear();
         latestAuth.current = null;
         setAuth(null);
         setThreads([]);
@@ -224,6 +302,7 @@ function Toolbar() {
       .safeParse(event.data);
     if (!result.success) return;
     const data = result.data;
+    if (data.type === 'feedback:connect' && !auth) setConnecting(true);
     if (data.type === 'feedback:configure') {
       version.current++;
       cachedThreads.current = [];
@@ -371,8 +450,13 @@ function Toolbar() {
     version.current++;
     cachedThreads.current = [];
     try {
+      if (sessionUser) await request('/api/auth/sign-out', { method: 'POST', body: {} });
       await connectionStore.signOut();
     } finally {
+      latestSession.current = null;
+      setSessionUser(null);
+      setVerified(false);
+      setConnecting(false);
       latestAuth.current = null;
       setAuth(null);
       setThreads([]);

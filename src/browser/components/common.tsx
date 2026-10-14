@@ -7,7 +7,16 @@ import { Avatar, AvatarFallback } from './ui/avatar.js';
 import { Badge } from './ui/badge.js';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card.js';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select.js';
+import { Field, FieldLabel } from './ui/field.js';
 import { Label } from './ui/label.js';
+import {
+  Empty as EmptyState,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+  EmptyDescription,
+  EmptyContent,
+} from './ui/empty.js';
 import { Textarea } from './ui/textarea.js';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip.js';
 import { cn } from '../lib/utils.js';
@@ -21,19 +30,19 @@ export function Brand({ small = false }: { small?: boolean }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-2.5 text-xl font-semibold tracking-tight',
+        'flex min-w-0 items-center gap-2.5 text-xl font-semibold tracking-tight',
         small && 'text-sm',
       )}
     >
       <span
         className={cn(
-          'grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground',
+          'grid size-8 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground',
           small && 'size-7 rounded-lg',
         )}
       >
         <MessageCircle className="size-4" />
       </span>
-      toolbar.bent.build
+      <span className="truncate">toolbar.bent.build</span>
     </div>
   );
 }
@@ -92,7 +101,7 @@ export function Section({
   className?: string;
 }) {
   return (
-    <Card className={cn('gap-0 rounded-xl py-0 shadow-none', className)}>
+    <Card className={cn('min-w-0 gap-0 rounded-xl py-0 shadow-none', className)}>
       <CardHeader className="border-b px-6 py-5">
         <CardTitle className="text-base font-medium">{title}</CardTitle>
         {description ? <CardDescription className="text-xs">{description}</CardDescription> : null}
@@ -113,16 +122,21 @@ export function Empty({
   symbol?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 px-5 py-12 text-center">
-      <div className="mb-1 grid size-12 place-items-center rounded-2xl border bg-muted/50 text-secondary-foreground">
-        {symbol ?? <MessageCircle className="size-5" />}
-      </div>
-      <h3 className="text-sm font-medium">{title}</h3>
-      {description ? (
-        <p className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</p>
-      ) : null}
-      {children}
-    </div>
+    <EmptyState className="gap-3 px-5 py-12">
+      <EmptyHeader className="gap-3">
+        <EmptyMedia
+          variant="icon"
+          className="mb-1 size-12 rounded-2xl border bg-muted/50 text-secondary-foreground"
+        >
+          {symbol ?? <MessageCircle className="size-5" />}
+        </EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+        {description ? (
+          <EmptyDescription className="max-w-xs text-xs leading-6">{description}</EmptyDescription>
+        ) : null}
+      </EmptyHeader>
+      {children ? <EmptyContent>{children}</EmptyContent> : null}
+    </EmptyState>
   );
 }
 export function Code({ children, copy = true }: { children: string; copy?: boolean }) {
@@ -169,8 +183,8 @@ export function Choice({
   disabled?: boolean;
 }) {
   return (
-    <div className="grid gap-2">
-      <Label className="text-xs text-secondary-foreground">{label}</Label>
+    <Field>
+      <FieldLabel className="text-xs text-secondary-foreground">{label}</FieldLabel>
       <Select
         value={value}
         onValueChange={(next) => {
@@ -179,18 +193,18 @@ export function Choice({
         items={options}
         disabled={disabled}
       >
-        <SelectTrigger className="w-full bg-card" aria-label={label}>
-          <SelectValue />
+        <SelectTrigger className="w-full min-w-0 max-w-full bg-card" aria-label={label}>
+          <SelectValue data-feedback-content />
         </SelectTrigger>
         <SelectContent alignItemWithTrigger={false}>
           {options.map((item) => (
-            <SelectItem key={item.value} value={item.value}>
+            <SelectItem key={item.value} value={item.value} data-feedback-content>
               {item.label}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
-    </div>
+    </Field>
   );
 }
 export function IconAction({
@@ -298,7 +312,10 @@ export function Conversation({
             <Person name={message.author} agent={message.kind === 'agent'} small />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <strong data-feedback-content className="font-medium">
+                <strong
+                  data-feedback-content
+                  className="min-w-0 max-w-full break-words font-medium"
+                >
                   {message.author}
                 </strong>
                 {message.kind === 'agent' ? (

@@ -16,6 +16,7 @@ export const connectionMetadata = z.object({
   kind: z.enum(['embed', 'personal']),
   projectId: z.string().nullable(),
   parentOrigin: z.string().nullable(),
+  browserSessionId: z.string().nullable().default(null),
 });
 export type AuthenticationDatabase = DatabaseSync | D1Database;
 export interface AuthenticationOptions {
@@ -129,6 +130,23 @@ export function createAuthentication(options: AuthenticationOptions) {
                 payload.cnf
               )
                 throw new Error('Invalid token audience or issuer.');
+              const metadata = connectionMetadata.parse(payload);
+              if (metadata.kind === 'embed') {
+                if (!metadata.browserSessionId)
+                  throw new Error('Approve a browser-bound connection.');
+                const session = z.object({ userId: z.string(), expiresAt: z.date() }).safeParse(
+                  await ctx.context.adapter.findOne({
+                    model: 'session',
+                    where: [{ field: 'id', value: metadata.browserSessionId }],
+                  }),
+                );
+                if (
+                  !session.success ||
+                  session.data.userId !== payload.sub ||
+                  session.data.expiresAt.getTime() <= Date.now()
+                )
+                  throw new Error('The authorizing browser session ended.');
+              }
               const provider = getOAuthProviderApi(ctx, oauthOptions);
               const tokenRecord = z
                 .object({ id: z.string(), clientId: z.string(), userId: z.string() })

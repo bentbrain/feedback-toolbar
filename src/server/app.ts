@@ -8,6 +8,7 @@ import {
   installation,
   jobSchema,
   memberSchema,
+  originSchema,
   projectInputSchema,
   projectSchema,
   publicJobSchema,
@@ -82,12 +83,20 @@ export function createApp(options: Options) {
     if (!header) {
       const session = await auth.api.getSession({ headers });
       if (!session) throw new HttpError(401, 'Sign in to the feedback service.');
+      const projectId = headers.get('x-feedback-project');
+      const parentOrigin = headers.get('x-feedback-origin');
+      if (
+        (projectId === null) !== (parentOrigin === null) ||
+        (projectId !== null && !/^prj_[a-f0-9]{16}$/.test(projectId))
+      )
+        throw new HttpError(400, 'Provide a complete toolbar scope.');
+      if (parentOrigin !== null) originSchema.parse(parentOrigin);
       return credentialSchema.parse({
         id: session.session.id,
         userId: session.user.id,
-        kind: 'session',
-        projectId: null,
-        parentOrigin: null,
+        kind: projectId !== null ? 'embed' : 'session',
+        projectId,
+        parentOrigin,
         name: 'Browser',
         expiresAt: session.session.expiresAt.getTime(),
         createdAt: session.session.createdAt.toISOString(),
@@ -350,6 +359,11 @@ export function createApp(options: Options) {
   // Only these maintained endpoints are exposed. Registration and key administration remain server-only.
   app.all('/api/auth/*', async (c, next) => {
     const path = c.req.path.slice('/api/auth'.length);
+    if (
+      c.req.header('x-feedback-project') !== undefined ||
+      c.req.header('x-feedback-origin') !== undefined
+    )
+      throw new HttpError(403, 'Toolbar sessions cannot manage account authentication.');
     const allowed = [
       '/sign-in/social',
       '/get-session',
@@ -371,14 +385,16 @@ export function createApp(options: Options) {
       const response = await auth.handler(c.req.raw);
       if (response.ok) {
         // A client remains disabled even if native issuance consumed the device before revocation.
-        const client = z.object({ disabled: z.number(), userId: z.string().nullable() }).safeParse(
-          (
-            await store.database.execute({
-              sql: 'SELECT disabled,userId FROM oauthClient WHERE clientId=?',
-              params: [clientId],
-            })
-          ).rows[0],
-        );
+        const client = z
+          .object({ disabled: z.number(), userId: z.string().nullable(), metadata: z.string() })
+          .safeParse(
+            (
+              await store.database.execute({
+                sql: 'SELECT disabled,userId,metadata FROM oauthClient WHERE clientId=?',
+                params: [clientId],
+              })
+            ).rows[0],
+          );
         if (!client.success || client.data.disabled !== 0 || !client.data.userId)
           return c.json(
             {
@@ -387,6 +403,45 @@ export function createApp(options: Options) {
             },
             400,
           );
+      }
+      if (response.ok) {
+        const adapter = (await auth.$context).adapter;
+        const client = z
+          .object({
+            userId: z.string(),
+            metadata: z.union([z.string(), z.record(z.string(), z.unknown())]),
+          })
+          .parse(
+            await adapter.findOne({
+              model: 'oauthClient',
+              where: [{ field: 'clientId', value: clientId }],
+            }),
+          );
+        const metadata = connectionMetadata.parse(
+          typeof client.metadata === 'string' ? JSON.parse(client.metadata) : client.metadata,
+        );
+        if (metadata.kind === 'embed') {
+          const session = metadata.browserSessionId
+            ? z.object({ userId: z.string(), expiresAt: z.date() }).safeParse(
+                await adapter.findOne({
+                  model: 'session',
+                  where: [{ field: 'id', value: metadata.browserSessionId }],
+                }),
+              )
+            : null;
+          if (
+            !session?.success ||
+            session.data.userId !== client.userId ||
+            session.data.expiresAt.getTime() <= Date.now()
+          )
+            return c.json(
+              {
+                error: 'invalid_grant',
+                error_description: 'The authorizing browser session ended.',
+              },
+              400,
+            );
+        }
       }
       return response;
     }
@@ -398,7 +453,10 @@ export function createApp(options: Options) {
       `connections:start:${digest(c.req.header('x-feedback-client-ip') ?? 'unknown')}`,
       120,
     );
-    const input = connectionMetadata.parse(await c.req.json());
+    const input = connectionMetadata.parse({
+      ...z.record(z.string(), z.unknown()).parse(await c.req.json()),
+      browserSessionId: null,
+    });
     if (input.kind === 'embed') {
       const project = requireValue(
         await store.get('projects', input.projectId ?? '', projectSchema),
@@ -432,6 +490,7 @@ export function createApp(options: Options) {
       return next();
     const principal = await authenticate(c.req.raw.headers);
     if (principal.kind === 'embed') {
+      await access(principal, principal.projectId ?? '');
       const allowed =
         c.req.method === 'GET'
           ? /^\/api\/(me|projects|projects\/[^/]+(?:\/threads|\/work)?|threads\/[^/]+)$/.test(
@@ -538,10 +597,32 @@ export function createApp(options: Options) {
       .object({ code: z.string().min(4).max(20), accept: z.boolean() })
       .strict()
       .parse(await c.req.json());
-    await reviewConnection(input.code, c.get('principal'), c.req.raw.headers);
-    if (input.accept)
+    const { metadata, device } = await reviewConnection(
+      input.code,
+      c.get('principal'),
+      c.req.raw.headers,
+    );
+    if (input.accept) {
+      if (device.status === 'approved') return c.json({ ok: true });
+      if (metadata.kind === 'embed') {
+        const adapter = (await auth.$context).adapter;
+        const record = z.object({ clientId: z.string() }).parse(
+          await adapter.findOne({
+            model: 'deviceCode',
+            where: [{ field: 'userCode', value: input.code }],
+          }),
+        );
+        await adapter.update({
+          model: 'oauthClient',
+          where: [{ field: 'clientId', value: record.clientId }],
+          update: {
+            metadata: JSON.stringify({ ...metadata, browserSessionId: c.get('principal').id }),
+          },
+        });
+      }
       await auth.api.deviceApprove({ headers: c.req.raw.headers, body: { userCode: input.code } });
-    else await auth.api.deviceDeny({ headers: c.req.raw.headers, body: { userCode: input.code } });
+    } else
+      await auth.api.deviceDeny({ headers: c.req.raw.headers, body: { userCode: input.code } });
     return c.json({ ok: true });
   });
   app.get('/api/projects', async (c) => {

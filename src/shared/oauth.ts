@@ -22,6 +22,15 @@ const oauthResponseSchema = z.object({
   expires_in: z.number(),
   user: publicUserSchema.optional(),
 });
+export class ConnectionError extends Error {
+  constructor(
+    message: string,
+    readonly terminal: boolean,
+  ) {
+    super(message);
+    this.name = 'ConnectionError';
+  }
+}
 export async function exchangeConnection(
   server: string,
   clientId: string,
@@ -52,10 +61,12 @@ export async function exchangeConnection(
       .safeParse(data);
     if (error.success && ['authorization_pending', 'slow_down'].includes(error.data.error))
       return { pending: true, slowDown: error.data.error === 'slow_down' };
-    throw new Error(
+    throw new ConnectionError(
       error.success
         ? (error.data.error_description ?? error.data.error)
-        : 'Connection failed. Sign in again.',
+        : 'Connection failed. Try again.',
+      [400, 401, 403].includes(response.status) &&
+        (!error.success || !['server_error', 'temporarily_unavailable'].includes(error.data.error)),
     );
   }
   const result = oauthResponseSchema.parse(data);

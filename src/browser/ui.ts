@@ -5,6 +5,15 @@ export function rootElement(): HTMLElement {
   if (!element) throw new Error('Application root is missing.');
   return element;
 }
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
 export async function request(
   path: string,
   options: {
@@ -37,7 +46,10 @@ export async function request(
   const data: unknown = await response.json();
   if (!response.ok) {
     const error = z.object({ error: z.string() }).safeParse(data);
-    throw new Error(error.success ? error.data.error : `Request failed (${response.status}).`);
+    throw new ApiError(
+      error.success ? error.data.error : `Request failed (${response.status}).`,
+      response.status,
+    );
   }
   return data;
 }

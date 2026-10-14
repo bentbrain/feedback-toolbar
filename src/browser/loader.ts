@@ -74,7 +74,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     width: '248px',
     height: '56px',
     'z-index': '2147483647',
-    display: 'block',
+    display: 'none',
     margin: '0',
     padding: '0',
     border: '0',
@@ -96,6 +96,10 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   const frameUrl = new URL('/toolbar', service);
   frameUrl.searchParams.set('project', options.projectId);
   frameUrl.searchParams.set('origin', location.origin);
+  if (location.hash === '#feedback-connect') {
+    frameUrl.searchParams.set('connect', '1');
+    history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+  }
   frame.src = frameUrl.toString();
   shadow.append(frame);
   document.documentElement.append(host);
@@ -187,6 +191,14 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     )
       return;
     const data = event.data;
+    if (data.type === 'feedback:visibility' && typeof data.visible === 'boolean') {
+      host.style.setProperty('display', data.visible ? 'block' : 'none', 'important');
+      if (!data.visible) {
+        stopSelection();
+        marked = null;
+        paint();
+      }
+    }
     if (data.type === 'feedback:ready')
       send({
         type: 'feedback:configure',
@@ -246,6 +258,10 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     }
   };
   const updateViewport = () => {
+    if (location.hash === '#feedback-connect') {
+      history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+      send({ type: 'feedback:connect' });
+    }
     resize(size.width, size.height);
     paint();
     send({

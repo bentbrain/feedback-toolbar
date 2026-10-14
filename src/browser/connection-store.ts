@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { connectionSchema, exchangeConnection, revokeConnection } from '../shared/oauth.js';
+import {
+  connectionSchema,
+  ConnectionError,
+  exchangeConnection,
+  revokeConnection,
+} from '../shared/oauth.js';
 
 type Connection = z.infer<typeof connectionSchema>;
 const recordSchema = z.object({ connection: connectionSchema, expires: z.number() });
@@ -77,7 +82,8 @@ export function createConnectionStore(key: string, server: string) {
   const current = () => {
     pending ??= locked(async () => {
       const previous = read();
-      if (!previous) throw new Error('Your connection expired or was revoked. Sign in again.');
+      if (!previous)
+        throw new ConnectionError('Your connection expired or was revoked. Sign in again.', true);
       if (previous.expiresAt >= Date.now() + 60_000) return previous;
       const result = await exchangeConnection(server, previous.clientId, {
         refreshToken: previous.refreshToken,
@@ -117,5 +123,5 @@ export function createConnectionStore(key: string, server: string) {
       }
     });
   };
-  return { read, start, current, signOut };
+  return { read, start, current, signOut, clear };
 }

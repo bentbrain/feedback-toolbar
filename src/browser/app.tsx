@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { CSPProvider } from '@base-ui/react/csp-provider';
 import {
   ArrowUpRight,
+  ChevronsUpDown,
   Bot,
   Check,
   Code2,
@@ -39,9 +40,31 @@ import type { Project, Theme, Thread } from '../shared/models.js';
 import { applyTheme, formInput, messageOf, relativeTime, request, rootElement } from './ui.js';
 import { cn } from './lib/utils.js';
 import { Button } from './components/ui/button.js';
+import {
+  Breadcrumb,
+  BreadcrumbList,
+  BreadcrumbItem,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from './components/ui/breadcrumb.js';
+import {
+  Sidebar,
+  SidebarProvider,
+  SidebarHeader,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarInset,
+  SidebarTrigger,
+  useSidebar,
+} from './components/ui/sidebar.js';
 import { Input } from './components/ui/input.js';
 import { Textarea } from './components/ui/textarea.js';
 import { Label } from './components/ui/label.js';
+import { Field as FormField, FieldLabel, FieldDescription } from './components/ui/field.js';
 import { Badge } from './components/ui/badge.js';
 import { Card } from './components/ui/card.js';
 import {
@@ -103,13 +126,13 @@ function Field({
   hint?: string;
 }) {
   return (
-    <div className="grid gap-2">
-      <Label htmlFor={id} className="text-xs text-secondary-foreground">
+    <FormField>
+      <FieldLabel htmlFor={id} className="text-xs text-secondary-foreground">
         {label}
-      </Label>
+      </FieldLabel>
       {children}
-      {hint ? <p className="text-[11px] leading-5 text-muted-foreground">{hint}</p> : null}
-    </div>
+      {hint ? <FieldDescription className="text-[11px] leading-5">{hint}</FieldDescription> : null}
+    </FormField>
   );
 }
 function Auth({
@@ -587,7 +610,7 @@ function Installation({
   return (
     <>
       <PageHeading title="Installation" />
-      <div className="grid items-start gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
         <Section title="Install the toolbar">
           <div className="grid gap-7">
             <Step number="1" title="Add this to your shared HTML layout">
@@ -596,8 +619,33 @@ function Installation({
             <Step number="2" title="Or ask your agent to do it">
               <Code>{`feedback-toolbar login --server ${location.origin}\nfeedback-toolbar init --server ${location.origin} --project ${project.id} --file ./index.html --json`}</Code>
             </Step>
-            <Step number="3" title="Open your website and sign in">
-              <Button variant="outline" size="sm" onClick={onDemo}>
+            <Step number="3" title="Open your website">
+              <div className="flex flex-wrap gap-2">
+                {project.origins.map((origin) => (
+                  <Button
+                    key={origin}
+                    variant="outline"
+                    size="sm"
+                    className="h-auto min-h-7 max-w-full whitespace-normal break-all"
+                    nativeButton={false}
+                    render={
+                      <a
+                        href={`${origin}/#feedback-connect`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      />
+                    }
+                  >
+                    {new URL(origin).host} <ArrowUpRight />
+                  </Button>
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-auto min-h-7 whitespace-normal"
+                onClick={onDemo}
+              >
                 Try on the example website <ArrowUpRight />
               </Button>
             </Step>
@@ -685,10 +733,17 @@ function ToolbarPreview({ theme, name }: { theme: Theme; name: string }) {
     <div ref={ref} className="w-full max-w-[340px]">
       <Card className="gap-0 overflow-hidden rounded-lg py-0 shadow-lg shadow-black/5">
         <div className="flex items-center justify-between border-b px-5 py-4">
-          <div className="flex items-center gap-2">
-            <MessageCircle className="size-4 text-primary" />
-            <div className="text-sm font-medium">
-              Feedback<p className="mt-0.5 text-[10px] font-normal text-muted-foreground">{name}</p>
+          <div className="flex min-w-0 items-center gap-2">
+            <MessageCircle className="size-4 shrink-0 text-primary" />
+            <div className="min-w-0 text-sm font-medium">
+              Feedback
+              <p
+                data-feedback-content
+                className="mt-0.5 truncate text-[10px] font-normal text-muted-foreground"
+                title={name}
+              >
+                {name}
+              </p>
             </div>
           </div>
           <Button variant="ghost" size="icon-xs" aria-label="Example close button">
@@ -747,7 +802,7 @@ function Appearance({
   return (
     <>
       <PageHeading title="Appearance" />
-      <div className="grid items-start gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
         <Section title="Toolbar theme">
           <div className="grid gap-6">
             <div className="grid gap-3">
@@ -767,7 +822,7 @@ function Appearance({
                     <TabsTrigger
                       key={id}
                       value={id}
-                      className="flex h-full flex-col gap-2 rounded-lg border px-5 text-xs capitalize data-active:border-secondary-foreground/60 data-active:bg-secondary/30"
+                      className="flex h-full min-w-0 flex-col gap-2 rounded-lg border px-2 text-xs capitalize data-active:border-secondary-foreground/60 data-active:bg-secondary/30 sm:px-5"
                     >
                       <Icon className="size-4" />
                       {id}
@@ -892,7 +947,7 @@ function Appearance({
             </div>
           </div>
         </Section>
-        <div>
+        <div className="min-w-0">
           <Card className="gap-0 overflow-hidden rounded-xl py-0 shadow-none">
             <div className="flex items-center justify-between border-b px-6 py-5">
               <h3 className="text-sm font-medium">Live preview</h3>
@@ -920,7 +975,7 @@ function People({
   return (
     <>
       <PageHeading title="Members" />
-      <div className="grid items-start gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
         <Section title="Project members">
           <div className="-m-6">
             {members.map((member) => (
@@ -930,8 +985,17 @@ function People({
               >
                 <Person name={member.user.name} />
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium">{member.user.name}</p>
-                  <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                  <p
+                    data-feedback-content
+                    className="truncate text-xs font-medium"
+                    title={member.user.name}
+                  >
+                    {member.user.name}
+                  </p>
+                  <p
+                    data-feedback-content
+                    className="mt-1 truncate text-[11px] text-muted-foreground"
+                  >
                     {member.user.email}
                   </p>
                 </div>
@@ -1029,7 +1093,7 @@ function Agents({
   return (
     <>
       <PageHeading title="Agents" />
-      <div className="grid items-start gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
         <div className="grid gap-6">
           <Section title="Connect an agent">
             <div className="grid gap-7">
@@ -1073,8 +1137,14 @@ function Agents({
                     className="flex items-center gap-3 border-b px-6 py-5 last:border-0"
                   >
                     <Person name={agent.name} agent />
-                    <div className="flex-1">
-                      <p className="text-xs font-medium">{agent.name}</p>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        data-feedback-content
+                        className="truncate text-xs font-medium"
+                        title={agent.name}
+                      >
+                        {agent.name}
+                      </p>
                       <p className="mt-1 text-[10px] text-muted-foreground">
                         Expires {new Date(agent.expiresAt).toLocaleDateString()}
                       </p>
@@ -1162,7 +1232,15 @@ function Agents({
   );
 }
 
-function Dashboard({
+function Dashboard(props: { user: Account; onLogout: () => void; demoUrl: string }) {
+  return (
+    <SidebarProvider>
+      <DashboardContent {...props} />
+    </SidebarProvider>
+  );
+}
+
+function DashboardContent({
   user,
   onLogout,
   demoUrl,
@@ -1171,6 +1249,7 @@ function Dashboard({
   onLogout: () => void;
   demoUrl: string;
 }) {
+  const { isMobile, setOpenMobile } = useSidebar();
   const [projects, setProjects] = useState<z.infer<typeof projectListSchema>>([]);
   const [selected, setSelected] = useState(() => localStorage.getItem('feedback-project-v1') ?? '');
   const [view, setView] = useState<View>('feedback');
@@ -1310,19 +1389,21 @@ function Dashboard({
       return;
     }
     destination.searchParams.set('project', p.id);
+    destination.hash = 'feedback-connect';
     window.open(destination.href, '_blank', 'noopener');
   };
   const visible = threads.filter((thread) => filter === 'all' || thread.status === filter);
   const changeView = (next: View) => {
     setView(next);
+    setOpenMobile(false);
     setActiveId(null);
   };
   return (
     <>
-      <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[224px_minmax(0,1fr)]">
-        <aside className="flex min-w-0 flex-col gap-6 border-b bg-card p-5 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:py-7">
+      <Sidebar>
+        <SidebarHeader>
           <Brand small />
-          <div className="rounded-lg border bg-muted/30 p-3">
+          <div className="min-w-0 rounded-lg border bg-muted/30 p-3">
             <Choice
               label="Project"
               value={p?.id ?? ''}
@@ -1335,285 +1416,319 @@ function Dashboard({
               }}
             />
           </div>
-          <nav className="flex gap-1 overflow-x-auto lg:grid" aria-label="Project navigation">
-            {navigation.map(({ id, label, icon: Icon }) => (
-              <Button
-                key={id}
-                variant="ghost"
-                className={cn(
-                  'h-10 shrink-0 justify-start gap-3 text-xs font-normal text-muted-foreground',
-                  view === id && 'bg-secondary/60 font-medium text-secondary-foreground',
-                )}
-                onClick={() => {
-                  changeView(id);
-                }}
-              >
-                <Icon className="size-4" />
-                {label}
-                {id === 'feedback' &&
-                threads.filter((thread) => thread.status === 'open').length ? (
-                  <Badge variant="secondary" className="ml-auto text-[9px]">
-                    {threads.filter((thread) => thread.status === 'open').length}
-                  </Badge>
-                ) : null}
-              </Button>
-            ))}
-          </nav>
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <nav aria-label="Project navigation">
+              <SidebarMenu>
+                {navigation.map(({ id, label, icon: Icon }) => (
+                  <SidebarMenuItem key={id}>
+                    <SidebarMenuButton
+                      isActive={view === id}
+                      aria-label={label}
+                      aria-current={view === id ? 'page' : undefined}
+                      onClick={() => {
+                        changeView(id);
+                      }}
+                    >
+                      <Icon />
+                      <span>{label}</span>
+                      {id === 'feedback' &&
+                      threads.filter((thread) => thread.status === 'open').length ? (
+                        <Badge variant="secondary" className="ml-auto text-[9px]">
+                          {threads.filter((thread) => thread.status === 'open').length}
+                        </Badge>
+                      ) : null}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </nav>
+          </SidebarGroup>
           <Button
             variant="ghost"
             size="sm"
             className="justify-start text-muted-foreground"
             onClick={() => {
+              setOpenMobile(false);
               setNewOpen(true);
             }}
           >
             <Plus className="size-3.5" /> New project
           </Button>
-          <div className="mt-auto hidden space-y-5 lg:block">
-            <div className="flex items-center gap-2 border-t pt-4">
-              <Person name={user.name} />
-              <div className="min-w-0 flex-1 text-xs">
-                <p>{user.name}</p>
-                <p className="mt-1 text-[10px] capitalize text-muted-foreground">
-                  {p?.role ?? 'Account'}
-                </p>
-              </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={<Button variant="ghost" size="icon-xs" aria-label="Account menu" />}
-                >
-                  <ArrowUpRight />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={onLogout}>
-                    <LogOut /> Sign out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+        </SidebarContent>
+        <SidebarFooter>
+          <div className="border-t pt-4">
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={<SidebarMenuButton className="h-14 gap-2" aria-label="Account menu" />}
+                  >
+                    <Person name={user.name} />
+                    <span className="min-w-0 flex-1 text-left text-xs normal-case">
+                      <span data-feedback-content className="block truncate" title={user.name}>
+                        {user.name}
+                      </span>
+                      <span className="mt-1 block text-[10px] capitalize text-muted-foreground">
+                        {p?.role ?? 'Account'}
+                      </span>
+                    </span>
+                    <ChevronsUpDown className="ml-auto" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    side={isMobile ? 'top' : 'right'}
+                    align="end"
+                    sideOffset={isMobile ? 8 : 28}
+                    className="w-56 max-w-[calc(100vw-1rem)]"
+                  >
+                    <DropdownMenuItem onClick={onLogout}>
+                      <LogOut /> Sign out
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </SidebarMenuItem>
+            </SidebarMenu>
           </div>
-        </aside>
-        <main className="min-w-0">
-          <header className="flex h-[74px] items-center justify-between gap-4 border-b bg-card/60 px-6 sm:px-10">
-            <div className="flex min-w-0 items-center gap-3 text-[11px] text-muted-foreground">
-              <span className="truncate text-secondary-foreground">{p?.name ?? 'Projects'}</span>
-              <span>/</span>
-              <span>{navigation.find((item) => item.id === view)?.label}</span>
-            </div>
-            <div className="flex shrink-0 items-center gap-4">
-              {p ? (
-                <Button variant="outline" size="sm" onClick={tryDemo}>
-                  Open example <ArrowUpRight />
-                </Button>
-              ) : null}
+        </SidebarFooter>
+      </Sidebar>
+      <SidebarInset>
+        <header className="flex min-h-[74px] flex-wrap items-center justify-between gap-3 border-b bg-card/60 px-5 py-4 sm:px-10">
+          <div className="flex min-w-0 flex-1 items-center gap-3 text-[11px] text-muted-foreground">
+            <SidebarTrigger />
+            <Breadcrumb className="min-w-0">
+              <BreadcrumbList className="flex-nowrap gap-3 text-[11px]">
+                <BreadcrumbItem className="min-w-0">
+                  <span
+                    data-feedback-content
+                    className="truncate text-secondary-foreground"
+                    title={p?.name}
+                  >
+                    {p?.name ?? 'Projects'}
+                  </span>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator>/</BreadcrumbSeparator>
+                <BreadcrumbItem className="shrink-0">
+                  <BreadcrumbPage className="text-muted-foreground">
+                    {navigation.find((item) => item.id === view)?.label}
+                  </BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
+          </div>
+          {p ? (
+            <Button variant="outline" size="sm" onClick={tryDemo}>
+              Open example <ArrowUpRight />
+            </Button>
+          ) : null}
+        </header>
+        <div
+          data-slot="dashboard-content"
+          className="mx-auto w-full max-w-[1280px] px-5 py-8 sm:px-10 sm:py-10"
+        >
+          {!ready ? (
+            <Empty title="Loading…" symbol={<Loader2 className="size-5 animate-spin" />} />
+          ) : view === 'account' ? (
+            <AccountSecurity />
+          ) : !p ? (
+            <Empty title="No projects" description="Create a project to install the toolbar.">
               <Button
-                className="lg:hidden"
-                variant="ghost"
-                size="icon-xs"
-                onClick={onLogout}
-                aria-label="Sign out"
+                onClick={() => {
+                  setNewOpen(true);
+                }}
               >
-                <LogOut />
+                <Plus /> Create your first project
               </Button>
-            </div>
-          </header>
-          <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-10 sm:py-10">
-            {!ready ? (
-              <Empty title="Loading…" symbol={<Loader2 className="size-5 animate-spin" />} />
-            ) : view === 'account' ? (
-              <AccountSecurity />
-            ) : !p ? (
-              <Empty title="No projects" description="Create a project to install the toolbar.">
-                <Button
-                  onClick={() => {
-                    setNewOpen(true);
+            </Empty>
+          ) : view === 'install' ? (
+            <Installation key={p.id} project={p} onSave={saveProject} onDemo={tryDemo} />
+          ) : view === 'appearance' ? (
+            <Appearance key={p.id} project={p} onSave={saveProject} />
+          ) : view === 'people' ? (
+            <People project={p} members={members} onReload={refresh} />
+          ) : view === 'agents' ? (
+            <Agents project={p} agents={agents} onReload={refresh} />
+          ) : (
+            <>
+              <PageHeading title="Feedback">
+                <Button className="h-9" onClick={tryDemo}>
+                  <Target /> Leave feedback <ArrowUpRight />
+                </Button>
+              </PageHeading>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+                <h2 className="text-base font-medium">
+                  Conversations{' '}
+                  <span className="ml-1 text-sm font-normal text-muted-foreground">
+                    {threads.length}
+                  </span>
+                </h2>
+                <div className="relative w-full sm:max-w-[220px]">
+                  <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+                  <Input
+                    value={search}
+                    onChange={(event) => {
+                      setActiveId(null);
+                      setNextBefore(null);
+                      setThreads([]);
+                      setSearch(event.target.value);
+                    }}
+                    placeholder="Search feedback…"
+                    aria-label="Search feedback"
+                    className="h-9 bg-card pl-8 text-xs"
+                  />
+                </div>
+              </div>
+              <Card className="gap-0 overflow-hidden rounded-xl py-0 shadow-none">
+                <Tabs
+                  value={filter}
+                  onValueChange={(value) => {
+                    if (typeof value === 'string') {
+                      setActiveId(null);
+                      setNextBefore(null);
+                      setThreads([]);
+                      setFilter(value);
+                    }
                   }}
                 >
-                  <Plus /> Create your first project
-                </Button>
-              </Empty>
-            ) : view === 'install' ? (
-              <Installation key={p.id} project={p} onSave={saveProject} onDemo={tryDemo} />
-            ) : view === 'appearance' ? (
-              <Appearance key={p.id} project={p} onSave={saveProject} />
-            ) : view === 'people' ? (
-              <People project={p} members={members} onReload={refresh} />
-            ) : view === 'agents' ? (
-              <Agents project={p} agents={agents} onReload={refresh} />
-            ) : (
-              <>
-                <PageHeading title="Feedback">
-                  <Button className="h-9" onClick={tryDemo}>
-                    <Target /> Leave feedback <ArrowUpRight />
-                  </Button>
-                </PageHeading>
-                <div className="mb-4 flex items-center justify-between gap-4">
-                  <h2 className="text-base font-medium">
-                    Conversations{' '}
-                    <span className="ml-1 text-sm font-normal text-muted-foreground">
-                      {threads.length}
-                    </span>
-                  </h2>
-                  <div className="relative max-w-[220px]">
-                    <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
-                    <Input
-                      value={search}
-                      onChange={(event) => {
-                        setActiveId(null);
-                        setNextBefore(null);
-                        setThreads([]);
-                        setSearch(event.target.value);
-                      }}
-                      placeholder="Search feedback…"
-                      aria-label="Search feedback"
-                      className="h-9 bg-card pl-8 text-xs"
-                    />
-                  </div>
-                </div>
-                <Card className="gap-0 overflow-hidden rounded-xl py-0 shadow-none">
-                  <Tabs
-                    value={filter}
-                    onValueChange={(value) => {
-                      if (typeof value === 'string') {
-                        setActiveId(null);
-                        setNextBefore(null);
-                        setThreads([]);
-                        setFilter(value);
-                      }
-                    }}
+                  <TabsList
+                    variant="line"
+                    className="h-14 w-full justify-start gap-4 border-b px-4 sm:gap-6 sm:px-6"
                   >
-                    <TabsList variant="line" className="h-14 gap-6 border-b px-6">
-                      {[
-                        { id: 'all', label: 'All feedback' },
-                        { id: 'open', label: 'Open' },
-                        { id: 'resolved', label: 'Resolved' },
-                      ].map((tab) => (
-                        <TabsTrigger
-                          key={tab.id}
-                          value={tab.id}
-                          className="h-14 px-0 text-xs after:bottom-0"
-                        >
-                          {tab.label}
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                  </Tabs>
-                  {visible.length ? (
-                    visible.map((thread) => {
-                      const first = thread.messages[0];
-                      const job = jobs.filter((job) => job.threadId === thread.id).at(-1);
-                      return (
-                        <Button
-                          key={thread.id}
-                          variant="ghost"
-                          className="h-auto w-full justify-start whitespace-normal rounded-none border-b px-6 py-5 text-left font-normal last:border-b-0"
-                          onClick={() => {
-                            setActiveId(thread.id);
-                          }}
-                        >
-                          <Person name={first?.author ?? ''} />
-                          <div className="ml-1 min-w-0 flex-1">
-                            <p data-feedback-content className="line-clamp-2 text-xs leading-6">
-                              {first?.body}
-                            </p>
-                            <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-                              <span data-feedback-content>{first?.author}</span>
-                              <span>·</span>
-                              <span data-feedback-content>
-                                {new URL(thread.context.url).pathname}
-                              </span>
-                              <span>·</span>
-                              <span>{thread.context.anchor.tag}</span>
-                              <Badge variant="secondary" className="text-[9px]">
-                                {thread.status}
-                              </Badge>
-                              {job ? <JobBadge job={job} /> : null}
-                            </div>
-                          </div>
-                          <div className="ml-3 hidden items-center gap-3 text-[10px] text-muted-foreground sm:flex">
-                            <span>{relativeTime(thread.updatedAt)}</span>
-                            <span className="flex items-center gap-1">
-                              <MessageCircle className="size-3" />
-                              {thread.messageCount ?? thread.messages.length}
+                    {[
+                      { id: 'all', label: 'All feedback' },
+                      { id: 'open', label: 'Open' },
+                      { id: 'resolved', label: 'Resolved' },
+                    ].map((tab) => (
+                      <TabsTrigger
+                        key={tab.id}
+                        value={tab.id}
+                        className="h-14 flex-none px-0 text-xs after:bottom-0"
+                      >
+                        {tab.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                {visible.length ? (
+                  visible.map((thread) => {
+                    const first = thread.messages[0];
+                    const job = jobs.filter((job) => job.threadId === thread.id).at(-1);
+                    return (
+                      <Button
+                        key={thread.id}
+                        variant="ghost"
+                        className="h-auto w-full justify-start whitespace-normal rounded-none border-b px-6 py-5 text-left font-normal last:border-b-0"
+                        onClick={() => {
+                          setActiveId(thread.id);
+                        }}
+                      >
+                        <Person name={first?.author ?? ''} />
+                        <div className="ml-1 min-w-0 flex-1">
+                          <p
+                            data-feedback-content
+                            className="line-clamp-2 break-words text-xs leading-6"
+                          >
+                            {first?.body}
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 break-all text-[10px] text-muted-foreground">
+                            <span data-feedback-content className="min-w-0">
+                              {first?.author}
                             </span>
+                            <span>·</span>
+                            <span data-feedback-content className="min-w-0">
+                              {new URL(thread.context.url).pathname}
+                            </span>
+                            <span>·</span>
+                            <span>{thread.context.anchor.tag}</span>
+                            <Badge variant="secondary" className="text-[9px]">
+                              {thread.status}
+                            </Badge>
+                            {job ? <JobBadge job={job} /> : null}
                           </div>
-                        </Button>
-                      );
-                    })
-                  ) : (
-                    <Empty
-                      title={
-                        search
-                          ? 'No matching feedback'
-                          : filter === 'resolved'
-                            ? 'No resolved feedback'
-                            : 'No feedback'
-                      }
-                      description={
-                        search
-                          ? 'Try another search.'
-                          : filter === 'resolved'
-                            ? 'Resolved feedback will appear here.'
-                            : 'Select an element on the website to leave feedback.'
-                      }
-                    >
-                      {!search && filter !== 'resolved' ? (
-                        <Button variant="outline" size="sm" onClick={tryDemo}>
-                          Try on the example website <ExternalLink />
-                        </Button>
-                      ) : null}
-                    </Empty>
-                  )}
-                </Card>
-                {nextBefore ? (
-                  <Button
-                    variant="outline"
-                    className="mt-4"
-                    onClick={() => {
-                      const projectId = p.id;
-                      const criteria = JSON.stringify([search, filter]);
-                      if (
-                        pagination.current.projectId !== projectId ||
-                        pagination.current.criteria !== criteria
-                      )
-                        return;
-                      const version = ++generation.current;
-                      void request(
-                        `/api/projects/${projectId}/threads?before=${nextBefore}&q=${encodeURIComponent(search)}${filter === 'all' ? '' : `&status=${filter}`}`,
-                      )
-                        .then((data) => {
-                          if (
-                            version !== generation.current ||
-                            pagination.current.projectId !== projectId ||
-                            pagination.current.criteria !== criteria
-                          )
-                            return;
-                          const page = z
-                            .object({
-                              threads: z.array(threadSchema),
-                              nextBefore: z.number().nullable(),
-                            })
-                            .parse(data);
-                          setThreads((previous) => [
-                            ...previous,
-                            ...page.threads.filter(
-                              (thread) => !previous.some((current) => current.id === thread.id),
-                            ),
-                          ]);
-                          pagination.current.before = page.nextBefore;
-                          setNextBefore(page.nextBefore);
-                        })
-                        .catch((failure: unknown) => toast.error(messageOf(failure)));
-                    }}
+                        </div>
+                        <div className="ml-3 hidden items-center gap-3 text-[10px] text-muted-foreground sm:flex">
+                          <span>{relativeTime(thread.updatedAt)}</span>
+                          <span className="flex items-center gap-1">
+                            <MessageCircle className="size-3" />
+                            {thread.messageCount ?? thread.messages.length}
+                          </span>
+                        </div>
+                      </Button>
+                    );
+                  })
+                ) : (
+                  <Empty
+                    title={
+                      search
+                        ? 'No matching feedback'
+                        : filter === 'resolved'
+                          ? 'No resolved feedback'
+                          : 'No feedback'
+                    }
+                    description={
+                      search
+                        ? 'Try another search.'
+                        : filter === 'resolved'
+                          ? 'Resolved feedback will appear here.'
+                          : 'Select an element on the website to leave feedback.'
+                    }
                   >
-                    Load earlier conversations
-                  </Button>
-                ) : null}
-              </>
-            )}
-          </div>
-        </main>
-      </div>
+                    {!search && filter !== 'resolved' ? (
+                      <Button variant="outline" size="sm" onClick={tryDemo}>
+                        Try on the example website <ExternalLink />
+                      </Button>
+                    ) : null}
+                  </Empty>
+                )}
+              </Card>
+              {nextBefore ? (
+                <Button
+                  variant="outline"
+                  className="mt-4"
+                  onClick={() => {
+                    const projectId = p.id;
+                    const criteria = JSON.stringify([search, filter]);
+                    if (
+                      pagination.current.projectId !== projectId ||
+                      pagination.current.criteria !== criteria
+                    )
+                      return;
+                    const version = ++generation.current;
+                    void request(
+                      `/api/projects/${projectId}/threads?before=${nextBefore}&q=${encodeURIComponent(search)}${filter === 'all' ? '' : `&status=${filter}`}`,
+                    )
+                      .then((data) => {
+                        if (
+                          version !== generation.current ||
+                          pagination.current.projectId !== projectId ||
+                          pagination.current.criteria !== criteria
+                        )
+                          return;
+                        const page = z
+                          .object({
+                            threads: z.array(threadSchema),
+                            nextBefore: z.number().nullable(),
+                          })
+                          .parse(data);
+                        setThreads((previous) => [
+                          ...previous,
+                          ...page.threads.filter(
+                            (thread) => !previous.some((current) => current.id === thread.id),
+                          ),
+                        ]);
+                        pagination.current.before = page.nextBefore;
+                        setNextBefore(page.nextBefore);
+                      })
+                      .catch((failure: unknown) => toast.error(messageOf(failure)));
+                  }}
+                >
+                  Load earlier conversations
+                </Button>
+              ) : null}
+            </>
+          )}
+        </div>
+      </SidebarInset>
       <NewProject
         open={newOpen}
         onOpenChange={setNewOpen}

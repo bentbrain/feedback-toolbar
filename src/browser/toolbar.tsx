@@ -24,6 +24,7 @@ import {
 } from '../shared/models.js';
 import type { Theme, Thread } from '../shared/models.js';
 import { createConnectionStore } from './connection-store.js';
+import { newestJob, newestThread, requestWork, useMutationState } from './mutations.js';
 import { ApiError, applyTheme, messageOf, relativeTime, request, rootElement } from './ui.js';
 import { Button } from './components/ui/button.js';
 import { Badge } from './components/ui/badge.js';
@@ -95,15 +96,11 @@ function Toolbar() {
   const [page, setPage] = useState('');
   const [screen, setScreen] = useState<'list' | 'selecting' | 'compose' | 'thread'>('list');
   const [context, setContext] = useState<z.infer<typeof contextSchema> | null>(null);
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const cachedThreads = useRef<Thread[]>([]);
-  useEffect(() => {
-    cachedThreads.current = threads;
-  }, [threads]);
-  const [activeDetail, setActiveDetail] = useState<Thread | null>(null);
+  const [threads, setThreads, cachedThreads] = useMutationState<Thread[]>([]);
+  const [activeDetail, setActiveDetail, cachedDetail] = useMutationState<Thread | null>(null);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
   const loadedPages = useRef(false);
-  const [jobs, setJobs] = useState<Work[]>([]);
+  const [jobs, setJobs, cachedJobs] = useMutationState<Work[]>([]);
   const [role, setRole] = useState('viewer');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -160,7 +157,6 @@ function Toolbar() {
       ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
       : null;
     if (latest) {
-      setActiveDetail(latest.thread);
       data.threads = data.threads.map((thread) =>
         thread.id === latest.thread.id ? latest.thread : thread,
       );
@@ -185,6 +181,7 @@ function Toolbar() {
       }),
     );
     if (current !== version.current) return;
+    if (latest) setActiveDetail(latest.thread);
     setThreads([...data.threads, ...retained.flat()]);
     if (!loadedPages.current) setNextBefore(data.nextBefore);
     setJobs(data.jobs);
@@ -199,7 +196,7 @@ function Toolbar() {
       setTheme(own.theme);
       setConnecting(false);
     }
-  }, [auth, api, page, activeId]);
+  }, [auth, api, page, activeId, cachedThreads, setActiveDetail, setJobs, setThreads]);
   useEffect(() => {
     let cancelled = false;
     let checking = false;
@@ -308,7 +305,7 @@ function Toolbar() {
       clearInterval(timer);
       counter.current++;
     };
-  }, [auth, refresh]);
+  }, [auth, refresh, setJobs, setThreads]);
   const receive = useEffectEvent((event: MessageEvent<unknown>) => {
     if (!boundedMessage(event.data)) return;
     const result = z
@@ -546,13 +543,48 @@ function Toolbar() {
       <MapPin className="size-4" />
     </Button>
   );
+  const mutationContext = JSON.stringify([page, auth?.user?.id]);
+  const currentContext = useRef(mutationContext);
+  const focusedThread = useRef(activeId);
+  useEffect(() => {
+    currentContext.current = mutationContext;
+    focusedThread.current = activeId;
+  }, [mutationContext, activeId]);
+  const workKeys = useRef(new Map<string, string>());
+  const acceptThread = (result: unknown, created = false) => {
+    if (currentContext.current !== mutationContext) return null;
+    const received = z.object({ thread: threadSchema }).parse(result).thread;
+    const thread = newestThread(received, [cachedDetail.current, ...cachedThreads.current]);
+    version.current++;
+    const exists = cachedThreads.current.some((item) => item.id === thread.id);
+    cachedThreads.current = exists
+      ? cachedThreads.current.map((item) => (item.id === thread.id ? thread : item))
+      : created
+        ? [thread, ...cachedThreads.current]
+        : cachedThreads.current;
+    setThreads(cachedThreads.current);
+    if (created || focusedThread.current === thread.id) setActiveDetail(thread);
+    setError('');
+    return thread;
+  };
+  const acceptJob = (result: unknown) => {
+    if (currentContext.current !== mutationContext) return null;
+    const received = z.object({ job: publicJobSchema }).parse(result).job;
+    const job = newestJob(received, cachedJobs.current);
+    version.current++;
+    setJobs((previous) =>
+      previous.some((item) => item.id === job.id)
+        ? previous.map((item) => (item.id === job.id ? job : item))
+        : [...previous, job],
+    );
+    setError('');
+    return job;
+  };
   const sendWork = async (thread: Thread) => {
-    await api(`/api/threads/${thread.id}/work`, {
-      method: 'POST',
-      body: { revision: thread.revision, idempotencyKey: crypto.randomUUID() },
-    });
-    await refresh();
-    toast.success('Queued.');
+    setError('');
+    const job = acceptJob(await requestWork(thread, workKeys.current, api));
+    if (job?.status === 'queued') toast.success('Queued.');
+    else if (job) toast.message(`Work ${job.status}.`);
   };
   return (
     <TooltipProvider>
@@ -673,17 +705,19 @@ function Toolbar() {
                 className="grid gap-3"
                 onSubmit={(event) => {
                   event.preventDefault();
+                  if (busy) return;
+                  setError('');
                   setBusy(true);
                   void api(`/api/projects/${projectId}/threads`, {
                     method: 'POST',
                     body: { context, body: draft },
                   })
-                    .then(async (result) => {
-                      const thread = z.object({ thread: threadSchema }).parse(result).thread;
+                    .then((result) => {
+                      const thread = acceptThread(result, true);
+                      if (!thread) return;
                       setActiveId(thread.id);
                       setScreen('thread');
                       setDraft('');
-                      await refresh();
                     })
                     .catch((failure: unknown) => {
                       setError(messageOf(failure));
@@ -713,8 +747,8 @@ function Toolbar() {
                     Visible to project members
                   </span>
                   <Button type="submit" disabled={busy || !draft.trim()} size="sm">
-                    {busy ? <Loader2 className="animate-spin" /> : null}Post feedback{' '}
-                    <ArrowUpRight />
+                    {busy ? <Loader2 className="animate-spin" /> : null}
+                    {busy ? 'Posting…' : 'Post feedback'} <ArrowUpRight />
                   </Button>
                 </div>
               </form>
@@ -727,23 +761,29 @@ function Toolbar() {
               job={jobs.filter((job) => job.threadId === active.id).at(-1)}
               role={role}
               onReply={async (body) => {
-                await api(`/api/threads/${active.id}/messages`, { method: 'POST', body: { body } });
-                await refresh();
+                acceptThread(
+                  await api(`/api/threads/${active.id}/messages`, {
+                    method: 'POST',
+                    body: { body },
+                  }),
+                );
               }}
               onReact={async (messageId, emoji) => {
-                await api(`/api/threads/${active.id}/reactions`, {
-                  method: 'POST',
-                  body: { messageId, emoji },
-                });
-                await refresh();
+                acceptThread(
+                  await api(`/api/threads/${active.id}/reactions`, {
+                    method: 'POST',
+                    body: { messageId, emoji },
+                  }),
+                );
               }}
               onSend={() => sendWork(active)}
               onResolve={async () => {
-                await api(`/api/threads/${active.id}`, {
-                  method: 'PATCH',
-                  body: { status: active.status === 'open' ? 'resolved' : 'open' },
-                });
-                await refresh();
+                acceptThread(
+                  await api(`/api/threads/${active.id}`, {
+                    method: 'PATCH',
+                    body: { status: active.status === 'open' ? 'resolved' : 'open' },
+                  }),
+                );
               }}
               onHighlight={() => {
                 send({ type: 'feedback:highlight', selector: active.context.anchor.selector });
@@ -751,8 +791,7 @@ function Toolbar() {
               onCancel={async () => {
                 const job = jobs.filter((job) => job.threadId === active.id).at(-1);
                 if (job) {
-                  await api(`/api/work/${job.id}/cancel`, { method: 'POST', body: {} });
-                  await refresh();
+                  acceptJob(await api(`/api/work/${job.id}/cancel`, { method: 'POST', body: {} }));
                 }
               }}
             />

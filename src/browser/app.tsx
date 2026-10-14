@@ -38,6 +38,7 @@ import {
 } from '../shared/models.js';
 import type { Project, Theme, Thread } from '../shared/models.js';
 import { applyTheme, formInput, messageOf, relativeTime, request, rootElement } from './ui.js';
+import { newestJob, newestThread, requestWork, useMutationState } from './mutations.js';
 import { cn } from './lib/utils.js';
 import { Button } from './components/ui/button.js';
 import {
@@ -1253,19 +1254,15 @@ function DashboardContent({
   const [projects, setProjects] = useState<z.infer<typeof projectListSchema>>([]);
   const [selected, setSelected] = useState(() => localStorage.getItem('feedback-project-v1') ?? '');
   const [view, setView] = useState<View>('feedback');
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const cachedThreads = useRef<Thread[]>([]);
-  useEffect(() => {
-    cachedThreads.current = threads;
-  }, [threads]);
-  const [activeDetail, setActiveDetail] = useState<Thread | null>(null);
+  const [threads, setThreads, cachedThreads] = useMutationState<Thread[]>([]);
+  const [activeDetail, setActiveDetail, cachedDetail] = useMutationState<Thread | null>(null);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
   const pagination = useRef<{ projectId: string; before: number | null; criteria: string }>({
     projectId: '',
     before: null,
     criteria: '',
   });
-  const [jobs, setJobs] = useState<Work[]>([]);
+  const [jobs, setJobs, cachedJobs] = useMutationState<Work[]>([]);
   const [members, setMembers] = useState<z.infer<typeof memberListSchema>>([]);
   const [agents, setAgents] = useState<z.infer<typeof agentListSchema>>([]);
   const [newOpen, setNewOpen] = useState(false);
@@ -1307,7 +1304,6 @@ function DashboardContent({
           ? z.object({ thread: threadSchema, jobs: z.array(publicJobSchema) }).parse(currentThread)
           : null;
         if (current?.thread.projectId === chosen.id) {
-          setActiveDetail(current.thread);
           feedback.threads = feedback.threads.map((thread) =>
             thread.id === current.thread.id ? current.thread : thread,
           );
@@ -1350,6 +1346,7 @@ function DashboardContent({
           if (version !== generation.current) return;
           feedback.threads.push(...retained.flat());
         }
+        if (current?.thread.projectId === chosen.id) setActiveDetail(current.thread);
         setThreads(feedback.threads);
         setJobs(feedback.jobs);
         setMembers(z.object({ members: memberListSchema }).parse(people).members);
@@ -1362,7 +1359,7 @@ function DashboardContent({
         setReady(true);
       }
     },
-    [selected, search, filter, activeId],
+    [selected, search, filter, activeId, cachedThreads, setActiveDetail, setJobs, setThreads],
   );
   useEffect(() => {
     void refresh().catch((failure: unknown) => toast.error(messageOf(failure)));
@@ -1376,6 +1373,38 @@ function DashboardContent({
       counter.current++;
     };
   }, [refresh]);
+  const mutationContext = JSON.stringify([p?.id, search, filter]);
+  const currentContext = useRef(mutationContext);
+  const focusedThread = useRef(activeId);
+  useEffect(() => {
+    currentContext.current = mutationContext;
+    focusedThread.current = activeId;
+  }, [mutationContext, activeId]);
+  const workKeys = useRef(new Map<string, string>());
+  const acceptThread = (result: unknown) => {
+    if (currentContext.current !== mutationContext) return null;
+    const received = z.object({ thread: threadSchema }).parse(result).thread;
+    const thread = newestThread(received, [cachedDetail.current, ...cachedThreads.current]);
+    generation.current++;
+    const exists = cachedThreads.current.some((item) => item.id === thread.id);
+    cachedThreads.current = exists
+      ? cachedThreads.current.map((item) => (item.id === thread.id ? thread : item))
+      : cachedThreads.current;
+    setThreads(cachedThreads.current);
+    if (focusedThread.current === thread.id) setActiveDetail(thread);
+  };
+  const acceptJob = (result: unknown) => {
+    if (currentContext.current !== mutationContext) return null;
+    const received = z.object({ job: publicJobSchema }).parse(result).job;
+    const job = newestJob(received, cachedJobs.current);
+    generation.current++;
+    setJobs((previous) =>
+      previous.some((item) => item.id === job.id)
+        ? previous.map((item) => (item.id === job.id ? job : item))
+        : [...previous, job],
+    );
+    return job;
+  };
   const saveProject = async (input: unknown) => {
     if (!p) return;
     await request(`/api/projects/${p.id}`, { method: 'PATCH', body: input });
@@ -1760,40 +1789,40 @@ function DashboardContent({
               job={jobs.filter((job) => job.threadId === active.id).at(-1)}
               role={p.role}
               onReply={async (body) => {
-                await request(`/api/threads/${active.id}/messages`, {
-                  method: 'POST',
-                  body: { body },
-                });
-                await refresh();
+                acceptThread(
+                  await request(`/api/threads/${active.id}/messages`, {
+                    method: 'POST',
+                    body: { body },
+                  }),
+                );
               }}
               onReact={async (messageId, emoji) => {
-                await request(`/api/threads/${active.id}/reactions`, {
-                  method: 'POST',
-                  body: { messageId, emoji },
-                });
-                await refresh();
+                acceptThread(
+                  await request(`/api/threads/${active.id}/reactions`, {
+                    method: 'POST',
+                    body: { messageId, emoji },
+                  }),
+                );
               }}
               onSend={async () => {
-                await request(`/api/threads/${active.id}/work`, {
-                  method: 'POST',
-                  body: { revision: active.revision, idempotencyKey: crypto.randomUUID() },
-                });
-                await refresh();
-                toast.success('Queued.');
+                const job = acceptJob(await requestWork(active, workKeys.current, request));
+                if (job?.status === 'queued') toast.success('Queued.');
+                else if (job) toast.message(`Work ${job.status}.`);
               }}
               onResolve={async () => {
-                await request(`/api/threads/${active.id}`, {
-                  method: 'PATCH',
-                  body: { status: active.status === 'open' ? 'resolved' : 'open' },
-                });
-                await refresh();
+                acceptThread(
+                  await request(`/api/threads/${active.id}`, {
+                    method: 'PATCH',
+                    body: { status: active.status === 'open' ? 'resolved' : 'open' },
+                  }),
+                );
               }}
               onCancel={async () => {
                 const job = jobs.filter((job) => job.threadId === active.id).at(-1);
-                if (job) {
-                  await request(`/api/work/${job.id}/cancel`, { method: 'POST', body: {} });
-                  await refresh();
-                }
+                if (job)
+                  acceptJob(
+                    await request(`/api/work/${job.id}/cancel`, { method: 'POST', body: {} }),
+                  );
               }}
             />
           ) : null}

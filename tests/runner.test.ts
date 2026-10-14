@@ -81,7 +81,9 @@ void test(
       t.skip('Install the supported runner to exercise its OS sandbox.');
       return;
     }
-    const directory = await mkdtemp(join(tmpdir(), 'feedback-runner-startup-'));
+    // The CLI refuses helper aliases under /tmp on Linux. Keep disposable auth private.
+    await mkdir('.data', { recursive: true, mode: 0o700 });
+    const directory = await realpath(await mkdtemp('.data/runner-startup-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const workspace = join(directory, 'workspace');
     const auth = join(directory, 'disposable-auth');

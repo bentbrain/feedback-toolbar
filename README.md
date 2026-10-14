@@ -83,6 +83,8 @@ node dist/cli.js worker --runner codex --workspace /path/to/website
 
 This adapter requires Codex CLI 0.161.0 or newer and an existing harness login. It ignores user configuration and execution rules, enforces a workspace permission profile, denies secret files and unrelated filesystem reads, disables command networking, and supplies a minimal tool environment. It never auto-merges or deploys. Use WSL on Windows. Prepare dependencies before starting; network-dependent checks must be run separately by a trusted operator.
 
+Linux hosts must satisfy the [CLI sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing). Ubuntu 24.04 needs Bubblewrap and its supplied AppArmor profile loaded before starting the worker. CI installs these prerequisites and checks startup with disposable authentication and a mock provider. The worker resolves standalone and official package-manager installations and grants read access to their executable runtime files. It keeps the workspace policy and secret exclusions enforced.
+
 Claims are exclusive per project and tied to a leased credential. Revocation, cancellation, or lease expiry stops further authorized updates. Expired runs become failed and release the queue, with a visible instruction to inspect local changes. They are never replayed automatically. Agent completion leaves the feedback thread open for human review. Agent snapshots have a 512 KB limit and are delivered through stdin.
 
 ## Appearance

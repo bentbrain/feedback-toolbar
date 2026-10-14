@@ -45,6 +45,12 @@ jobs:
         with:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile
+      - name: Prepare Ubuntu sandbox prerequisites
+        if: matrix.name == 'Tests'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap apparmor-profiles
+          sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
       - name: Install supported runner for sandbox startup regression
         if: matrix.name == 'Tests'
         run: bun install --global @openai/codex@0.161.0

@@ -4,6 +4,8 @@
 @source "./**/*.{ts,tsx}";
 @custom-variant dark (&:is(.dark *));
 @theme inline {
+  --font-sans: 'Geist Mono', ui-monospace, monospace;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -22,56 +24,46 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
 }
 :root {
-  font-family:
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
+  font-family: 'Geist Mono', ui-monospace, monospace;
   font-synthesis: none;
-  --background: #f8f9f6;
-  --foreground: #303830;
+  --background: #fff;
+  --foreground: var(--primary);
   --card: #fff;
-  --card-foreground: #303830;
+  --card-foreground: var(--foreground);
   --popover: #fff;
-  --popover-foreground: #303830;
-  --primary: #e66b42;
+  --popover-foreground: var(--foreground);
+  --primary: #0647ff;
   --primary-foreground: #fff;
-  --secondary: #f0f3e9;
-  --secondary-foreground: #5a6d49;
-  --muted: #f3f5ee;
-  --muted-foreground: #788370;
-  --accent: #edf1e4;
-  --accent-foreground: #526442;
-  --destructive: #b75245;
-  --border: #e2e7db;
-  --input: #dfe5d7;
-  --ring: #a5b58f;
-  --radius: 0.65rem;
+  --secondary: #eef2ff;
+  --secondary-foreground: var(--foreground);
+  --muted: #f5f6fa;
+  --muted-foreground: #526080;
+  --accent: #eef2ff;
+  --accent-foreground: var(--foreground);
+  --destructive: #b42318;
+  --border: var(--primary);
+  --input: var(--primary);
+  --ring: var(--primary);
+  --radius: 0px;
 }
 .dark {
-  --background: #22271f;
-  --foreground: #e0e8d7;
-  --card: #252b22;
-  --card-foreground: #e0e8d7;
-  --popover: #2b3226;
-  --popover-foreground: #e0e8d7;
-  --secondary: #30382a;
-  --secondary-foreground: #c4d2b5;
-  --muted: #2d3527;
-  --muted-foreground: #9da992;
-  --accent: #333e2a;
-  --accent-foreground: #c4d2b5;
-  --border: #3d4735;
-  --input: #3d4735;
-  --ring: #a5b58f;
+  --background: #000;
+  --card: #000;
+  --popover: #000;
+  --primary: #2870ff;
+  --secondary: #10182b;
+  --muted: #10131c;
+  --muted-foreground: #a2aec8;
+  --accent: #10182b;
+  --destructive: #ff8b85;
 }
 @layer base {
   * {
@@ -80,10 +72,22 @@
   body {
     @apply bg-background text-foreground antialiased;
     margin: 0;
+    text-transform: lowercase;
   }
   button,
   [role='button'] {
     cursor: pointer;
+  }
+  button,
+  [role='button'] {
+    text-transform: uppercase;
+  }
+  input,
+  textarea,
+  code,
+  pre,
+  [data-feedback-content] {
+    text-transform: none;
   }
   button:disabled {
     cursor: not-allowed;

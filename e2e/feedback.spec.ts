@@ -7,6 +7,9 @@ test('new user creates a project, customizes its theme, and gets the installatio
   page,
 }) => {
   await page.goto('/');
+  expect(
+    await page.evaluate(async () => (await document.fonts.load('12px "Geist Mono"')).length),
+  ).toBeGreaterThan(0);
   await page.getByRole('button', { name: 'Create an account' }).click();
   await page.getByLabel('Your name').fill('Alex Morgan');
   await page.getByLabel('Email address').fill(`${randomUUID()}@example.invalid`);
@@ -101,7 +104,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
   await expect(frame.locator('html')).toHaveCSS('--primary', '#788468');
-  await expect(frame.locator('html')).toHaveCSS('--radius', '3px');
+  await expect(frame.locator('html')).toHaveCSS('--radius', '0px');
   const popupPromise = page.waitForEvent('popup');
   await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
   const popup = await popupPromise;
@@ -143,6 +146,10 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   const posted = await postedPromise;
   expect(posted.status()).toBe(201);
   await expect(frame.getByText('Please increase the spacing around this button.')).toBeVisible();
+  await expect(frame.getByText('Please increase the spacing around this button.')).toHaveCSS(
+    'text-transform',
+    'none',
+  );
   await frame.getByRole('button', { name: 'React with 👍' }).click();
   await frame.getByRole('button', { name: 'Send to agent' }).click();
   await expect(
@@ -242,7 +249,7 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   }, project.id);
   await expect(frame.locator('html')).toHaveCSS('--primary', '#4065ab');
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
-  await expect(frame.locator('html')).toHaveCSS('--radius', '3px');
+  await expect(frame.locator('html')).toHaveCSS('--radius', '0px');
   expect(errors).toEqual([]);
 });
 

@@ -88,7 +88,7 @@ Claims are exclusive per project and tied to a leased credential. Revocation, ca
 
 ## Appearance
 
-Project owners configure light, dark, or system mode; accent color; corner radius; density; and toolbar placement. The same tokens apply to the toolbar and its dialogs. Validated overrides are also available in `mountFeedback({ theme: ... })` or script attributes such as `data-accent`, `data-mode`, and `data-placement`.
+The default appearance follows the bent.build identity: bundled Geist Mono, cobalt blue, white or black backgrounds, and square controls. Custom project accents and other corner styles remain available. Project owners configure light, dark, or system mode; accent color; corner radius; density; and toolbar placement. The same tokens apply to the toolbar and its dialogs. Validated overrides are also available in `mountFeedback({ theme: ... })` or script attributes such as `data-accent`, `data-mode`, and `data-placement`.
 
 ## Development and self-hosting
 
@@ -108,6 +108,8 @@ Checks include formatting, strict typed ESLint, TypeScript, Knip, authorization/
 Toolbar grants remain behind the service origin. Where browser storage and Web Locks are available, a tab keeps only a grant pointer in session storage; token rotation uses a shared record under an exclusive browser lock. Copied tabs therefore cannot replay stale refresh tokens. Stored toolbar connections expire after eight hours and require approval again. Browsers that block these APIs keep independent grants in iframe memory and require sign-in after reload. Signing out revokes the shared grant for all its copies. Each connection uses a distinct native OAuth client bound to the approving account. Revocation permanently disables that client before deleting device codes and tokens, fencing concurrent issuance and refresh. Account recovery advances a permission generation and atomically revokes other browser sessions, clients and keys. Key creation commits only while that generation, the native issuing connection and project ownership remain valid; every key request checks its recorded generation. Late issuance cannot regain access after recovery. Account revocation also invalidates approved device codes that have not yet been exchanged.
 
 ## Production deployment
+
+The hosted service is https://toolbar.bent.build. Its GitHub OAuth app uses that homepage and `https://toolbar.bent.build/api/auth/callback/github` as its callback. Embeds and local connections must use this exact service origin. Browser sessions remain host-only.
 
 Vercel serves versioned browser assets and forwards dynamic paths through a small Node function to a Cloudflare Worker. The function signs the visitor IP, method, path, and timestamp with HMAC. The Worker rejects unsigned production API requests, preventing forged identity headers and shared proxy IP rate limits. D1 stores Better Auth accounts and OAuth grants, memberships, hashed agent keys, threads, work requests, persistent rate limits, and audit events. The example website runs on the Worker origin, separately from the toolbar UI.
 

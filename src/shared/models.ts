@@ -30,9 +30,9 @@ export const originSchema = z
 const colorSchema = z.string().regex(/^#[\da-fA-F]{6}$/, 'Use a six-digit hex color.');
 export const themeSchema = z
   .object({
-    mode: z.enum(['light', 'dark', 'system']).default('light'),
-    accent: colorSchema.default('#e66b42'),
-    radius: z.enum(['square', 'soft', 'round']).default('soft'),
+    mode: z.enum(['light', 'dark', 'system']).default('system'),
+    accent: colorSchema.default('#0647ff'),
+    radius: z.enum(['square', 'soft', 'round']).default('square'),
     density: z.enum(['comfortable', 'compact']).default('comfortable'),
     placement: z.enum(['bottom-right', 'bottom-left']).default('bottom-right'),
   })

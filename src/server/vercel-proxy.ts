@@ -6,6 +6,12 @@ async function proxy(request: Request): Promise<Response> {
   try {
     const api = originSchema.parse(process.env.FEEDBACK_API_ORIGIN);
     const path = new URL(request.url);
+    const service = originSchema.parse(process.env.FEEDBACK_URL);
+    if (path.origin !== service) {
+      if (['GET', 'HEAD'].includes(request.method))
+        return Response.redirect(`${service}${path.pathname}${path.search}`, 307);
+      return Response.json({ error: 'Use the configured service URL.' }, { status: 403 });
+    }
     if (path.pathname === '/example') return Response.redirect(`${api}/example${path.search}`, 307);
     const headers = new Headers();
     for (const name of [

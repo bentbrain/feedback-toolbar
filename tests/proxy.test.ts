@@ -46,6 +46,7 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   const secret = token();
   const previousSecret = process.env.FEEDBACK_PROXY_SECRET;
   const previousOrigin = process.env.FEEDBACK_API_ORIGIN;
+  const previousService = process.env.FEEDBACK_URL;
   const backend = new Hono();
   let requests = 0;
   backend.all('*', async (c) => {
@@ -69,12 +70,15 @@ void test('the Vercel function replaces forged visitor headers and preserves red
   t.after(() => {
     server.close();
     api.close();
+    if (previousService === undefined) delete process.env.FEEDBACK_URL;
+    else process.env.FEEDBACK_URL = previousService;
     if (previousSecret === undefined) delete process.env.FEEDBACK_PROXY_SECRET;
     else process.env.FEEDBACK_PROXY_SECRET = previousSecret;
     if (previousOrigin === undefined) delete process.env.FEEDBACK_API_ORIGIN;
     else process.env.FEEDBACK_API_ORIGIN = previousOrigin;
   });
   const origin = `http://127.0.0.1:${z.object({ port: z.number() }).parse(server.address()).port}`;
+  process.env.FEEDBACK_URL = origin;
   const headers = {
     'x-vercel-forwarded-for': '203.0.113.44',
     'x-feedback-client-ip': '203.0.113.99',
@@ -94,5 +98,16 @@ void test('the Vercel function replaces forged visitor headers and preserves red
     body: 'x'.repeat(40_000),
   });
   assert.equal(large.status, 413);
+  assert.equal(requests, 1);
+  process.env.FEEDBACK_URL = 'https://toolbar.example';
+  const migrated = await fetch(`${origin}/auth?user_code=fixture`, { redirect: 'manual' });
+  assert.equal(migrated.status, 307);
+  assert.equal(migrated.headers.get('location'), 'https://toolbar.example/auth?user_code=fixture');
+  const rejected = await fetch(`${origin}/api/auth/sign-in/social`, {
+    method: 'POST',
+    headers,
+    body: '{}',
+  });
+  assert.equal(rejected.status, 403);
   assert.equal(requests, 1);
 });

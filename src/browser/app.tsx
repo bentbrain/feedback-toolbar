@@ -157,31 +157,22 @@ function Auth({
   }
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
-      <section className="flex flex-col justify-between gap-10 bg-[#edf1e4] p-7 sm:p-12 lg:p-16">
+      <section className="flex flex-col justify-between gap-10 border-b bg-background p-7 sm:p-12 lg:border-b-0 lg:border-r lg:p-16">
         <Brand />
-        <div className="my-auto">
-          <p className="eyebrow mb-5">Built for people. Ready for agents.</p>
-          <h1 className="max-w-lg text-4xl font-medium leading-[1.14] tracking-[-1.6px] text-[#536447] sm:text-5xl lg:text-[54px]">
-            A better website starts with a conversation.
-          </h1>
-          <p className="mt-6 max-w-sm text-sm leading-7 text-[#8b997c]">
-            Leave feedback on the details that matter. Bring your team and your coding agent into
-            the same conversation.
+        <div className="my-auto max-w-md">
+          <h1 className="text-3xl font-normal leading-tight">website feedback</h1>
+          <p className="mt-6 text-sm leading-7 text-muted-foreground">
+            Comment on an element, discuss it with your team, and send the thread to your agent.
           </p>
-          <div className="mt-10 hidden max-w-sm sm:block">
-            <MiniWebsite />
-          </div>
         </div>
-        <p className="eyebrow hidden text-[#a0ab93] lg:block">
-          Open source · Framework independent · Your workflow
-        </p>
+        <p className="text-xs text-muted-foreground">open source · framework independent</p>
       </section>
       <section className="flex items-center justify-center bg-card px-7 py-12">
         <form onSubmit={(event) => void submit(event)} className="grid w-full max-w-[340px] gap-7">
           <div>
             <p className="eyebrow mb-3">Your feedback workspace</p>
             <h2 className="text-[28px] font-medium tracking-[-.8px]">
-              {signup ? 'Make yourself at home.' : 'Welcome back.'}
+              {signup ? 'Create account' : 'Sign in'}
             </h2>
             <p className="mt-2 text-xs leading-6 text-muted-foreground">
               {signup
@@ -839,7 +830,7 @@ function Appearance({
                 Accent color
               </Label>
               <div className="flex flex-wrap gap-3">
-                {['#e66b42', '#72865d', '#6f7ee6', '#b46c97', '#2b8293', '#292f29'].map((color) => (
+                {['#0647ff', '#72865d', '#6f7ee6', '#b46c97', '#2b8293', '#292f29'].map((color) => (
                   <Button
                     key={color}
                     variant="ghost"
@@ -1450,7 +1441,7 @@ function Dashboard({
           </Button>
           <div className="mt-auto hidden space-y-5 lg:block">
             <p className="flex items-center gap-2 px-2 text-[10px] text-muted-foreground">
-              <span className="size-1.5 rounded-full bg-[#9db586]" /> Your feedback stays private
+              <span className="size-1.5 rounded-full bg-primary" /> Your feedback stays private
             </p>
             <div className="flex items-center gap-2 border-t pt-4">
               <Person name={user.name} />
@@ -1486,7 +1477,7 @@ function Dashboard({
             </div>
             <div className="flex shrink-0 items-center gap-4">
               <span className="hidden items-center gap-2 text-[10px] text-muted-foreground xl:flex">
-                <span className="size-1.5 rounded-full bg-[#9db586]" />
+                <span className="size-1.5 rounded-full bg-primary" />
                 Feedback service connected
               </span>
               {p ? (
@@ -1548,7 +1539,7 @@ function Dashboard({
                     <Target /> Leave feedback <ArrowUpRight />
                   </Button>
                 </PageHeading>
-                <div className="mb-7 grid items-center gap-6 overflow-hidden rounded-xl border border-[#dfe5d6] bg-gradient-to-r from-[#fafbf7] to-[#eff3e6] p-7 md:grid-cols-[1.15fr_1fr]">
+                <div className="mb-7 grid items-center gap-6 overflow-hidden rounded-xl border border-border bg-muted/40 p-7 md:grid-cols-[1.15fr_1fr]">
                   <div>
                     <p className="eyebrow">Feedback that finds its way home</p>
                     <h2 className="mt-3 text-[21px] font-medium tracking-[-.6px]">

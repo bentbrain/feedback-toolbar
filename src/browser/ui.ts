@@ -53,8 +53,14 @@ export function applyTheme(theme: Theme, element: HTMLElement = document.documen
   element.dataset.mode = resolved;
   element.classList.toggle('dark', resolved === 'dark');
   element.dataset.density = theme.density;
-  element.style.setProperty('--primary', theme.accent);
-  const rgb = theme.accent.match(/[a-fA-F\d]{2}/g)?.map((value) => Number.parseInt(value, 16)) ?? [
+  const accent =
+    resolved === 'dark' && theme.accent.toLowerCase() === '#0647ff' ? '#2870ff' : theme.accent;
+  element.style.setProperty('--primary', accent);
+  element.style.setProperty(
+    '--foreground',
+    theme.accent.toLowerCase() === '#0647ff' ? accent : resolved === 'dark' ? '#f5f5f5' : '#171717',
+  );
+  const rgb = accent.match(/[a-fA-F\d]{2}/g)?.map((value) => Number.parseInt(value, 16)) ?? [
     0, 0, 0,
   ];
   const luminance = rgb.reduce((sum, channel, index) => {
@@ -65,7 +71,7 @@ export function applyTheme(theme: Theme, element: HTMLElement = document.documen
   element.style.setProperty('--primary-foreground', luminance > 0.179 ? '#171717' : '#ffffff');
   element.style.setProperty(
     '--radius',
-    theme.radius === 'square' ? '3px' : theme.radius === 'round' ? '16px' : '10px',
+    theme.radius === 'square' ? '0px' : theme.radius === 'round' ? '16px' : '10px',
   );
 }
 export function relativeTime(value: string): string {

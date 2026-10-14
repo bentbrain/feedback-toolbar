@@ -179,7 +179,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: production
-      url: https://feedback-toolbar-bentbrain.vercel.app
+      url: https://toolbar.bent.build
     concurrency:
       group: production
       cancel-in-progress: false

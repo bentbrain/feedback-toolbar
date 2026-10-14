@@ -7,7 +7,7 @@
   "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": false }],
   "account_id": "86ff820ef99c8f2a035eb3ab03ce095a",
   "vars": {
-    "FEEDBACK_URL": "https://feedback-toolbar-bentbrain.vercel.app",
+    "FEEDBACK_URL": "https://toolbar.bent.build",
     "DEMO_URL": "https://feedback-toolbar-api.socialqueue.workers.dev/example",
     "FEEDBACK_ALLOW_SIGNUP": "true",
   },

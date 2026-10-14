@@ -52,6 +52,13 @@ if (process.argv.includes('--dry-run')) {
     throw new Error('Vercel project ownership does not match the deployment target.');
   const proxySecret = z.string().min(32).parse(process.env.FEEDBACK_PROXY_SECRET);
   const apiOrigin = originSchema.parse(process.env.FEEDBACK_API_ORIGIN);
+  const serviceOrigin = originSchema.parse(process.env.FEEDBACK_URL);
+  await request(`/v10/projects/${project}/env`, {
+    key: 'FEEDBACK_URL',
+    value: serviceOrigin,
+    type: 'plain',
+    target: ['production'],
+  });
   await request(`/v10/projects/${project}/env`, {
     key: 'FEEDBACK_PROXY_SECRET',
     value: proxySecret,

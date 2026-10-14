@@ -880,6 +880,15 @@ export function createApp(options: Options) {
       .default(Number.MAX_SAFE_INTEGER)
       .parse(c.req.query('before'));
     const pageUrl = c.req.query('url');
+    const origin = c.req.query('origin');
+    if (origin !== undefined) {
+      originSchema.parse(origin);
+      if (
+        !project.origins.includes(origin) ||
+        (c.get('principal').parentOrigin && origin !== c.get('principal').parentOrigin)
+      )
+        throw new HttpError(403, 'Comment page does not belong to this website.');
+    }
     if (
       pageUrl &&
       (!project.origins.includes(new URL(pageUrl).origin) ||
@@ -898,6 +907,7 @@ export function createApp(options: Options) {
               .max(50)
               .parse(ids.split(',')),
       url: pageUrl ? z.url().max(1500).parse(pageUrl) : undefined,
+      origin,
       search: z.string().max(200).optional().parse(c.req.query('q')),
       status: z.enum(['open', 'resolved']).optional().parse(c.req.query('status')),
     };

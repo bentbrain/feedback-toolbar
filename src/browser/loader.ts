@@ -1,5 +1,6 @@
 import { createHostPins, publicAnchor } from './host-pins.js';
-import { boundedMessage, feedbackPins } from './pin-protocol.js';
+import { createHostAnchors } from './host-anchors.js';
+import { boundedMessage, feedbackAnchors, feedbackPins } from './pin-protocol.js';
 
 export interface FeedbackOptions {
   server: string;
@@ -18,13 +19,17 @@ function record(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 function sanitizeText(element: Element): string {
-  if (element.closest('[data-feedback-private], input, textarea, select, [contenteditable]'))
+  if (
+    element.closest(
+      '[data-feedback-private],[data-feedback-redact],input,textarea,select,[contenteditable]',
+    )
+  )
     return '[Private element]';
   const clone = element.cloneNode(true);
   if (!(clone instanceof Element)) return '';
   clone
     .querySelectorAll(
-      'input,textarea,select,script,style,[data-feedback-private],[contenteditable]',
+      'input,textarea,select,script,style,[data-feedback-private],[data-feedback-redact],[contenteditable]',
     )
     .forEach((node) => {
       node.remove();
@@ -125,6 +130,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   let placement = options.theme?.placement ?? 'bottom-right';
   const send = (data: unknown) => frame.contentWindow?.postMessage(data, service.origin);
   const pageUrl = () => `${location.origin}${location.pathname}`;
+  const anchors = createHostAnchors(host, pageUrl, send);
   let pinsPage = '';
   let visible = false;
   const pins = createHostPins(shadow, (threadId) => {
@@ -137,6 +143,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   const clearPins = () => {
     pinsPage = '';
     pins.update([]);
+    anchors.update(null);
   };
   const media = matchMedia('(prefers-color-scheme: dark)');
   const systemMode = () => (media.matches ? 'dark' : 'light');
@@ -166,10 +173,12 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
   };
   const onMove = (event: PointerEvent) => {
     if (!selecting || event.composedPath().includes(host)) return;
-    if (event.target instanceof Element && !event.target.closest('[data-feedback-private]')) {
-      marked = event.target;
-      paint();
-    }
+    marked =
+      event.target instanceof Element &&
+      !event.target.closest('[data-feedback-private]:not([data-feedback-redact])')
+        ? event.target
+        : null;
+    paint();
   };
   const contextFor = (element: Element) => {
     const rect = element.getBoundingClientRect();
@@ -185,7 +194,9 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
         feedbackId: element.getAttribute('data-feedback-id')?.slice(0, 120) ?? null,
         tag: element.tagName.toLowerCase().slice(0, 40),
         text: sanitizeText(element),
-        label: (element.getAttribute('aria-label') ?? '').slice(0, 200),
+        label: element.closest('[data-feedback-redact]')
+          ? ''
+          : (element.getAttribute('aria-label') ?? '').slice(0, 200),
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       },
     };
@@ -198,7 +209,10 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     if (!selecting || event.composedPath().includes(host)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (!(event.target instanceof Element) || event.target.closest('[data-feedback-private]'))
+    if (
+      !(event.target instanceof Element) ||
+      event.target.closest('[data-feedback-private]:not([data-feedback-redact])')
+    )
       return;
     marked = event.target;
     stopSelection();
@@ -222,6 +236,10 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     )
       return;
     const data = event.data;
+    if (feedbackAnchors(data)) {
+      if (visible && data.url === pageUrl()) anchors.update(data);
+      return;
+    }
     if (feedbackPins(data)) {
       if (visible && data.url === pageUrl()) {
         pinsPage = data.url;
@@ -341,6 +359,7 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
     destroy() {
       clearInterval(navigation);
       pins.destroy();
+      anchors.destroy();
       stopSelection();
       host.remove();
       media.removeEventListener('change', onSystemTheme);

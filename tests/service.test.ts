@@ -892,6 +892,76 @@ void test('tenant-scoped pagination retains every thread without disclosing anot
   assert.equal(otherPage.threads.length, 0);
 });
 
+void test('website-scoped feedback includes nested routes before pagination and respects embed origin', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const otherOrigin = 'https://other.example';
+  await f.store.put('projects', project.id, { ...project, origins: [website, otherOrigin] });
+  const original = await f.thread(owner.cookie, project.id);
+  await f.store.insert('threads', 'nested', {
+    ...original,
+    id: 'nested',
+    context: { ...original.context, url: `${website}/owner` },
+  });
+  for (let index = 0; index < 51; index++)
+    await f.store.insert('threads', `foreign-${index}`, {
+      ...original,
+      id: `foreign-${index}`,
+      context: { ...original.context, url: `${otherOrigin}/owner` },
+    });
+  const headers = { 'x-feedback-project': project.id, 'x-feedback-origin': website };
+  const response = await f.call(
+    `/api/projects/${project.id}/threads?origin=${encodeURIComponent(website)}`,
+    { cookie: owner.cookie, headers },
+  );
+  assert.equal(response.status, 200);
+  const result = z
+    .object({ threads: z.array(threadSchema), nextBefore: z.null() })
+    .parse(await response.json());
+  assert.deepEqual(
+    result.threads.map((thread) => thread.id),
+    ['nested', original.id],
+  );
+  const nested = z
+    .object({ threads: z.array(threadSchema) })
+    .parse(
+      await (
+        await f.call(
+          `/api/projects/${project.id}/threads?origin=${encodeURIComponent(website)}&url=${encodeURIComponent(`${website}/owner`)}`,
+          { cookie: owner.cookie, headers },
+        )
+      ).json(),
+    );
+  assert.deepEqual(
+    nested.threads.map((thread) => thread.id),
+    ['nested'],
+  );
+  for (const origin of [otherOrigin, 'https://unregistered.example'])
+    assert.equal(
+      (
+        await f.call(`/api/projects/${project.id}/threads?origin=${encodeURIComponent(origin)}`, {
+          cookie: owner.cookie,
+          headers,
+        })
+      ).status,
+      403,
+    );
+  assert.equal(
+    (
+      await f.call(
+        `/api/projects/${project.id}/threads?origin=${encodeURIComponent(`${website}/owner`)}`,
+        { cookie: owner.cookie, headers },
+      )
+    ).status,
+    400,
+  );
+});
+
 void test('account recovery revokes lost OAuth grants and agent keys while retaining this browser', async (t) => {
   const f = fixture();
   t.after(async () => {

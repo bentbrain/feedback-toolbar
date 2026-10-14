@@ -103,6 +103,10 @@ function Toolbar() {
   const [systemMode, setSystemMode] = useState<'light' | 'dark' | null>(null);
   const [overrides, setOverrides] = useState<z.infer<typeof themeOverridesSchema>>({});
   const [page, setPage] = useState('');
+  const [matchedAnchors, setMatchedAnchors] = useState<{ url: string; threadIds: string[] }>({
+    url: '',
+    threadIds: [],
+  });
   const [screen, setScreen] = useState<'list' | 'selecting' | 'compose' | 'thread'>('list');
   const [context, setContext] = useState<z.infer<typeof contextSchema> | null>(null);
   const [threads, setThreads, cachedThreads] = useMutationState<Thread[]>([]);
@@ -153,9 +157,9 @@ function Toolbar() {
     [],
   );
   const refresh = useCallback(async () => {
-    if (!auth) return;
+    if (!auth || !page) return;
     const current = ++version.current;
-    const query = new URLSearchParams({ status: 'open', ...(page ? { url: page } : {}) });
+    const query = new URLSearchParams({ status: 'open', origin: parentOrigin });
     const [list, projects, currentThread] = await Promise.all([
       api(`/api/projects/${projectId}/threads?${query.toString()}`),
       api('/api/projects'),
@@ -181,7 +185,8 @@ function Toolbar() {
     const ids = cachedThreads.current
       .filter(
         (thread) =>
-          thread.context.url === page && !data.threads.some((fresh) => fresh.id === thread.id),
+          new URL(thread.context.url).origin === parentOrigin &&
+          !data.threads.some((fresh) => fresh.id === thread.id),
       )
       .map((thread) => thread.id);
     const batches = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) =>
@@ -341,14 +346,20 @@ function Toolbar() {
         systemMode: z.enum(['light', 'dark']).optional(),
         context: contextSchema.optional(),
         found: z.boolean().optional(),
+        threadIds: z
+          .array(z.string().regex(/^[\w-]{1,120}$/))
+          .max(maxPins)
+          .optional(),
       })
       .safeParse(event.data);
     if (!result.success) return;
     const data = result.data;
+    if (data.type === 'feedback:anchors-found' && data.url === page && data.threadIds)
+      setMatchedAnchors({ url: page, threadIds: data.threadIds });
     if (data.type === 'feedback:open-thread' && pinsAuthorized && showPins && data.url === page) {
       const thread = threads.find(
         (thread) =>
-          thread.id === data.threadId && thread.context.url === page && thread.status === 'open',
+          thread.id === data.threadId && pageThreads.some((item) => item.id === thread.id),
       );
       if (!thread) return;
       setActiveDetail(null);
@@ -533,28 +544,49 @@ function Toolbar() {
     }
   };
   const pinsAuthorized = Boolean(auth?.user && verified && auth.user.id === verifiedUserId);
-  const pageThreads = threads.filter(
-    (thread) => thread.context.url === page && thread.status === 'open',
+  const pageThreads = useMemo(
+    () =>
+      threads.filter(
+        (thread) =>
+          thread.status === 'open' &&
+          new URL(thread.context.url).origin === parentOrigin &&
+          (thread.context.url === page ||
+            (matchedAnchors.url === page && matchedAnchors.threadIds.includes(thread.id))),
+      ),
+    [threads, page, matchedAnchors],
   );
+  useEffect(() => {
+    send({
+      type: 'feedback:anchors',
+      url: page,
+      items: pinsAuthorized
+        ? threads
+            .filter(
+              (thread) =>
+                thread.status === 'open' &&
+                new URL(thread.context.url).origin === parentOrigin &&
+                thread.context.url !== page &&
+                thread.context.anchor.selector.length > 0,
+            )
+            .slice(0, maxPins)
+            .map((thread) => ({ threadId: thread.id, selector: thread.context.anchor.selector }))
+        : [],
+    });
+  }, [pinsAuthorized, threads, page]);
   useEffect(() => {
     send({
       type: 'feedback:pins',
       url: page,
       items:
         pinsAuthorized && showPins
-          ? threads
-              .filter(
-                (thread) =>
-                  thread.context.url === page &&
-                  thread.status === 'open' &&
-                  thread.context.anchor.selector.length > 0,
-              )
+          ? pageThreads
+              .filter((thread) => thread.context.anchor.selector.length > 0)
               .slice(0, maxPins)
               .map((thread) => ({ threadId: thread.id, selector: thread.context.anchor.selector }))
           : [],
     });
     if (!pinsAuthorized) setShowPins(false);
-  }, [pinsAuthorized, showPins, threads, page]);
+  }, [pinsAuthorized, showPins, pageThreads, page]);
   const pinsToggle = (
     <Button
       variant={showPins ? 'secondary' : 'ghost'}
@@ -894,7 +926,7 @@ function Toolbar() {
                     onClick={() => {
                       const current = ++version.current;
                       void api(
-                        `/api/projects/${projectId}/threads?status=open&before=${nextBefore}${page ? `&url=${encodeURIComponent(page)}` : ''}`,
+                        `/api/projects/${projectId}/threads?status=open&before=${nextBefore}&origin=${encodeURIComponent(parentOrigin)}`,
                       )
                         .then((result) => {
                           if (current !== version.current) return;

@@ -1213,3 +1213,231 @@ for (const clipping of [
     await expect(frame.getByText('Shape-clipped feedback', { exact: true })).toBeVisible();
   });
 }
+
+for (const motion of ['css-transition', 'web-animation', 'css-without-registry']) {
+  test(`sibling reflow regression tracks ${motion} at intermediate positions`, async ({ page }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    await createThread(page, project.id, '#motion-anchor', 'Sibling reflow feedback');
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate((motion) => {
+      if (motion === 'css-without-registry') {
+        Object.defineProperty(document, 'getAnimations', { value: undefined, configurable: true });
+        Object.defineProperty(document.documentElement, 'getAnimations', {
+          value: undefined,
+          configurable: true,
+        });
+      }
+      const row = document.createElement('section');
+      row.style.cssText = 'position:fixed;display:flex;left:20px;top:160px;width:500px;height:50px';
+      const spacer = document.createElement('div');
+      spacer.id = 'motion-spacer';
+      spacer.style.cssText = 'width:0px;height:50px;flex-shrink:0;transition:width 3s linear';
+      const anchor = document.createElement('button');
+      anchor.id = 'motion-anchor';
+      anchor.textContent = 'Anchor';
+      anchor.style.cssText = 'width:100px;height:50px;flex-shrink:0';
+      row.append(spacer, anchor);
+      document.body.append(row);
+    }, motion);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+    await page.locator('#motion-spacer').evaluate((spacer, motion) => {
+      if (motion === 'web-animation') {
+        spacer.animate([{ width: '0px' }, { width: '300px' }], {
+          duration: 3000,
+          fill: 'forwards',
+        });
+      } else if (spacer instanceof HTMLElement) spacer.style.width = '300px';
+    }, motion);
+    await expect
+      .poll(async () => (await intermediatePosition(page, 'motion-anchor')).anchor)
+      .toBeGreaterThan(100);
+    const position = await intermediatePosition(page, 'motion-anchor');
+    expect(position.anchor).toBeLessThan(320);
+    await expect(page.locator('#motion-anchor')).toHaveCSS('width', '100px');
+    await expect(page.locator('#motion-anchor')).toHaveCSS('height', '50px');
+    expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+  });
+}
+
+for (const layout of ['grid-ancestor-sibling', 'margin', 'font', 'custom-property']) {
+  test(`outside-subtree layout motion tracks ${layout} without selector queries per frame`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    await createThread(page, project.id, '#motion-anchor', 'Outside-subtree feedback');
+    const frame = await openToolbar(page, project.id);
+    if (layout === 'custom-property')
+      await page.addStyleTag({
+        content: '@property --opacity { syntax:"<length>"; inherits:false; initial-value:0px; }',
+      });
+    await page.evaluate((layout) => {
+      const row = document.createElement('section');
+      row.style.cssText = 'position:fixed;left:20px;top:160px;width:500px;height:50px;display:flex';
+      const spacer = document.createElement('div');
+      spacer.id = 'motion-spacer';
+      spacer.style.cssText = 'width:0px;height:50px;flex-shrink:0';
+      if (layout === 'font') {
+        spacer.textContent = 'MMMM';
+        spacer.style.width = 'auto';
+        spacer.style.fontSize = '10px';
+      }
+      if (layout === 'custom-property') spacer.style.width = 'var(--opacity)';
+      const anchor = document.createElement('button');
+      anchor.id = 'motion-anchor';
+      anchor.textContent = 'Anchor';
+      anchor.style.cssText = 'width:100px;height:50px;flex-shrink:0';
+      if (layout === 'grid-ancestor-sibling') {
+        row.style.display = 'grid';
+        row.style.gridTemplateColumns = 'auto 100px';
+        row.style.justifyContent = 'start';
+        const before = document.createElement('div');
+        const after = document.createElement('div');
+        before.append(spacer);
+        after.append(anchor);
+        row.append(before, after);
+      } else row.append(spacer, anchor);
+      document.body.append(row);
+    }, layout);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page)).length).toBe(1);
+    const initial = await intermediatePosition(page, 'motion-anchor');
+    await page.locator('#motion-spacer').evaluate((spacer, layout) => {
+      const frames =
+        layout === 'margin'
+          ? [{ marginRight: '0px' }, { marginRight: '300px' }]
+          : layout === 'font'
+            ? [{ fontSize: '10px' }, { fontSize: '60px' }]
+            : layout === 'custom-property'
+              ? [{ '--opacity': '0px' }, { '--opacity': '300px' }]
+              : [{ width: '0px' }, { width: '300px' }];
+      spacer.animate(frames, { duration: 3000, fill: 'forwards' });
+    }, layout);
+    await expect
+      .poll(async () => (await intermediatePosition(page, 'motion-anchor')).anchor)
+      .toBeGreaterThan(initial.anchor + 40);
+    const before = await counters(page);
+    for (let sample = 0; sample < 3; sample++) {
+      const position = await intermediatePosition(page, 'motion-anchor');
+      expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+      await waitForFrames(page, 100);
+    }
+    expect((await counters(page)).selectorReads - before.selectorReads).toBe(0);
+    await expect(page.locator('#motion-anchor')).toHaveCSS('width', '100px');
+    await expect(page.locator('#motion-anchor')).toHaveCSS('height', '50px');
+  });
+}
+
+for (const registry of ['document', 'element', 'css-events']) {
+  test(`unrelated infinite opacity decoration does not cause geometry sampling with ${registry} detection`, async ({
+    page,
+  }) => {
+    await instrument(page);
+    const project = await createProject(page);
+    await createThread(page, project.id, '#motion-anchor', 'Static feedback');
+    const frame = await openToolbar(page, project.id);
+    await page.addStyleTag({
+      content: '@keyframes unrelated-pin-opacity { from { opacity:1 } to { opacity:0.25 } }',
+    });
+    await page.evaluate((registry) => {
+      if (registry !== 'document')
+        Object.defineProperty(document, 'getAnimations', { value: undefined, configurable: true });
+      if (registry === 'css-events')
+        Object.defineProperty(document.documentElement, 'getAnimations', {
+          value: undefined,
+          configurable: true,
+        });
+      const anchor = document.createElement('button');
+      anchor.id = 'motion-anchor';
+      anchor.textContent = 'Static anchor';
+      anchor.style.cssText = 'position:fixed;left:20px;top:160px;width:100px;height:50px';
+      document.body.append(anchor);
+    }, registry);
+    await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+    await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+    await page.evaluate(() => {
+      const decoration = document.createElement('div');
+      decoration.style.cssText =
+        'position:fixed;left:700px;top:160px;width:50px;height:50px;background:red;animation:unrelated-pin-opacity 1s linear infinite';
+      document.body.append(decoration);
+    });
+    await waitForFrames(page, 200);
+    const before = await counters(page);
+    await waitForFrames(page, 500);
+    const after = await counters(page);
+    expect(after.geometryReads - before.geometryReads).toBe(0);
+    expect(after.selectorReads - before.selectorReads).toBe(0);
+    expect((await pins(page))[0]?.x).toBe(20);
+  });
+}
+
+test('outside-subtree CSS fallback follows ancestor-sibling motion and stops for pause, cancel and empty pins', async ({
+  page,
+}) => {
+  await instrument(page);
+  const project = await createProject(page);
+  await createThread(page, project.id, '#motion-anchor', 'Fallback layout feedback');
+  const frame = await openToolbar(page, project.id);
+  await page.addStyleTag({
+    content: '@keyframes sibling-pin-width { from { width:0px } to { width:300px } }',
+  });
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'getAnimations', { value: undefined, configurable: true });
+    Object.defineProperty(document.documentElement, 'getAnimations', {
+      value: undefined,
+      configurable: true,
+    });
+    const row = document.createElement('section');
+    row.style.cssText = 'position:fixed;left:20px;top:160px;width:500px;height:50px;display:flex';
+    const spacer = document.createElement('div');
+    spacer.id = 'motion-spacer';
+    spacer.style.cssText = 'width:0px;height:50px;flex-shrink:0';
+    const after = document.createElement('div');
+    const anchor = document.createElement('button');
+    anchor.id = 'motion-anchor';
+    anchor.textContent = 'Anchor';
+    anchor.style.cssText = 'width:100px;height:50px';
+    after.append(anchor);
+    row.append(spacer, after);
+    document.body.append(row);
+  });
+  await frame.getByRole('switch', { name: 'Show feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await page.locator('#motion-spacer').evaluate((spacer) => {
+    if (spacer instanceof HTMLElement)
+      spacer.style.animation = 'sibling-pin-width 3s linear infinite';
+  });
+  await expect
+    .poll(async () => (await intermediatePosition(page, 'motion-anchor')).anchor)
+    .toBeGreaterThan(100);
+  const position = await intermediatePosition(page, 'motion-anchor');
+  expect(Math.abs(position.pin - position.anchor)).toBeLessThan(8);
+  await page.locator('#motion-spacer').evaluate((spacer) => {
+    if (spacer instanceof HTMLElement) spacer.style.animationPlayState = 'paused';
+  });
+  await waitForFrames(page, 200);
+  const paused = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - paused.geometryReads).toBe(0);
+  await page.locator('#motion-spacer').evaluate((spacer) => {
+    if (spacer instanceof HTMLElement) spacer.style.animationPlayState = 'running';
+  });
+  await expect
+    .poll(async () => (await counters(page)).geometryReads)
+    .toBeGreaterThan(paused.geometryReads);
+  await page.locator('#motion-spacer').evaluate((spacer) => {
+    if (spacer instanceof HTMLElement) spacer.style.animation = 'none';
+  });
+  await expect.poll(async () => (await pins(page))[0]?.x).toBe(20);
+  await waitForFrames(page, 200);
+  const cancelled = await counters(page);
+  await waitForFrames(page, 300);
+  expect((await counters(page)).geometryReads - cancelled.geometryReads).toBe(0);
+  await frame.getByRole('switch', { name: 'Hide feedback pins', exact: true }).click();
+  await expect.poll(async () => (await pins(page)).length).toBe(0);
+  const empty = await counters(page);
+  await waitForFrames(page, 400);
+  expect(await counters(page)).toEqual(empty);
+});

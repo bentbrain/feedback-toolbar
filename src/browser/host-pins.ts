@@ -3,6 +3,43 @@ import type { FeedbackPin } from './pin-protocol.js';
 const privateSelector =
   '[data-feedback-private],input,textarea,select,[contenteditable],[data-feedback-host]';
 
+const paintOnlyProperties = new Set([
+  'opacity',
+  'color',
+  'backgroundcolor',
+  'bordercolor',
+  'bordertopcolor',
+  'borderrightcolor',
+  'borderbottomcolor',
+  'borderleftcolor',
+  'outlinecolor',
+  'caretcolor',
+  'textdecorationcolor',
+  'boxshadow',
+  'textshadow',
+]);
+const keyframeMetadata = new Set(['offset', 'computedOffset', 'easing', 'composite']);
+
+function paintOnly(property: string): boolean {
+  // Custom properties may feed dimensions or fonts on other elements through var().
+  return (
+    !property.startsWith('--') &&
+    paintOnlyProperties.has(property.replaceAll('-', '').toLowerCase())
+  );
+}
+
+function mayReflow(effect: KeyframeEffect): boolean {
+  // Unknown properties are intentionally included: layout can change without
+  // resizing an anchor, and ordinary/new layout properties must not need a list.
+  return effect
+    .getKeyframes()
+    .some((frame) =>
+      Object.keys(frame).some(
+        (property) => !keyframeMetadata.has(property) && !paintOnly(property),
+      ),
+    );
+}
+
 interface PinBounds {
   left: number;
   top: number;
@@ -217,10 +254,13 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
   let timer: ReturnType<typeof setTimeout> | undefined;
   let destroyed = false;
   let anchors: (Element | null)[] = [];
+  const relatedTargets = new Set<Element>();
   let motionFrame: number | undefined;
   let motionPoll: ReturnType<typeof setInterval> | undefined;
   const cssMotion = new Map<Element, Set<string>>();
   const browser: { getAnimations?: () => Animation[] } = document;
+  const rootBrowser: { getAnimations?: (options?: { subtree?: boolean }) => Animation[] } =
+    document.documentElement;
   let observed = new Set<Element>();
   const observer = new ResizeObserver(() => {
     schedule();
@@ -239,6 +279,15 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
         }
         return resolved.get(entry.pin.selector) ?? null;
       });
+      relatedTargets.clear();
+      for (const anchor of anchors) {
+        for (
+          let ancestor = anchor;
+          ancestor && !relatedTargets.has(ancestor);
+          ancestor = ancestor.parentElement
+        )
+          relatedTargets.add(ancestor);
+      }
       const targets = new Set(anchors.filter((anchor) => anchor !== null));
       if (entries.length) targets.add(document.documentElement);
       for (const anchor of observed) if (!targets.has(anchor)) observer.unobserve(anchor);
@@ -286,19 +335,67 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       detectMotion();
     }, 40);
   };
-  const relevant = (target: Element) => anchors.some((anchor) => anchor && target.contains(anchor));
-  const moving = () => {
-    if (!browser.getAnimations) return [...cssMotion.keys()].some(relevant);
-    return browser.getAnimations().some((animation) => {
-      const effect = animation.effect;
-      return (
-        (animation.playState === 'running' || animation.pending) &&
-        effect instanceof KeyframeEffect &&
-        effect.target instanceof Element &&
-        effect.getComputedTiming().progress !== null &&
-        relevant(effect.target)
+  const related = (target: Element) => relatedTargets.has(target);
+  const cssMayReflow = (target: Element, key: string) => {
+    if (key.startsWith('transition:')) return !paintOnly(key.slice('transition:'.length));
+    const source: { getAnimations?: () => Animation[] } = target;
+    const name = key.slice('animation:'.length);
+    const animations = source
+      .getAnimations?.()
+      .filter((animation) => 'animationName' in animation && animation.animationName === name);
+    // CSS animation events give only a name. Inspect their effects when supported,
+    // otherwise conservatively track them until their native end/cancel event.
+    return (
+      !animations?.length ||
+      animations.some(
+        (animation) => !(animation.effect instanceof KeyframeEffect) || mayReflow(animation.effect),
+      )
+    );
+  };
+  const activeMotion = (animation: Animation) => {
+    const effect = animation.effect;
+    return (
+      (animation.playState === 'running' || animation.pending) &&
+      effect instanceof KeyframeEffect &&
+      effect.target instanceof Element &&
+      effect.target.isConnected &&
+      effect.getComputedTiming().progress !== null &&
+      (related(effect.target) || mayReflow(effect))
+    );
+  };
+  const activeCssMotion = (target: Element, key: string) => {
+    const source: { getAnimations?: () => Animation[] } = target;
+    const animations = source.getAnimations?.();
+    if (animations) {
+      const transition = key.startsWith('transition:');
+      const name = key.slice(transition ? 'transition:'.length : 'animation:'.length);
+      return animations.some(
+        (animation) =>
+          (transition
+            ? 'transitionProperty' in animation && animation.transitionProperty === name
+            : 'animationName' in animation && animation.animationName === name) &&
+          activeMotion(animation),
       );
-    });
+    }
+    if (
+      key.startsWith('animation:') &&
+      getComputedStyle(target)
+        .animationPlayState.split(',')
+        .every((state) => state.trim() === 'paused')
+    )
+      return false;
+    return related(target) || cssMayReflow(target, key);
+  };
+  const moving = () => {
+    for (const target of cssMotion.keys()) if (!target.isConnected) cssMotion.delete(target);
+    const animations = browser.getAnimations?.() ?? rootBrowser.getAnimations?.({ subtree: true });
+    if (!animations) {
+      for (const [target, keys] of cssMotion) {
+        if ([...keys].some((key) => activeCssMotion(target, key))) return true;
+      }
+      return false;
+    }
+    return animations.some(activeMotion);
   };
   const sampleMotion = () => {
     motionFrame = undefined;
@@ -312,7 +409,7 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       motionFrame = requestAnimationFrame(sampleMotion);
   };
   const motionEvent = (event: Event) => {
-    if (!(event.target instanceof Element) || !entries.length || !relevant(event.target)) return;
+    if (!(event.target instanceof Element) || !entries.length) return;
     const key =
       event instanceof TransitionEvent
         ? `transition:${event.propertyName}`
@@ -325,8 +422,10 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
     else active.add(key);
     if (active.size) cssMotion.set(event.target, active);
     else cssMotion.delete(event.target);
-    schedule();
-    detectMotion();
+    if (related(event.target) || cssMayReflow(event.target, key)) {
+      schedule();
+      detectMotion();
+    }
   };
   const motionEvents = [
     'transitionrun',
@@ -403,6 +502,7 @@ export function createHostPins(shadow: ShadowRoot, open: (threadId: string) => v
       observer.disconnect();
       observed.clear();
       anchors = [];
+      relatedTargets.clear();
       entries = [];
       mutations.disconnect();
       window.removeEventListener('scroll', schedule, true);

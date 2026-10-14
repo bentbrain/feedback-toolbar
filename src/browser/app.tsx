@@ -596,7 +596,26 @@ function Installation({
             <Step number="2" title="Or ask your agent to do it">
               <Code>{`feedback-toolbar login --server ${location.origin}\nfeedback-toolbar init --server ${location.origin} --project ${project.id} --file ./index.html --json`}</Code>
             </Step>
-            <Step number="3" title="Open your website and sign in">
+            <Step number="3" title="Open your website">
+              <div className="flex flex-wrap gap-2">
+                {project.origins.map((origin) => (
+                  <Button
+                    key={origin}
+                    variant="outline"
+                    size="sm"
+                    nativeButton={false}
+                    render={
+                      <a
+                        href={`${origin}/#feedback-connect`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      />
+                    }
+                  >
+                    {new URL(origin).host} <ArrowUpRight />
+                  </Button>
+                ))}
+              </div>
               <Button variant="outline" size="sm" onClick={onDemo}>
                 Try on the example website <ArrowUpRight />
               </Button>
@@ -1310,6 +1329,7 @@ function Dashboard({
       return;
     }
     destination.searchParams.set('project', p.id);
+    destination.hash = 'feedback-connect';
     window.open(destination.href, '_blank', 'noopener');
   };
   const visible = threads.filter((thread) => filter === 'all' || thread.status === filter);

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { build } from 'esbuild';
 import type { createConnectionStore } from '../src/browser/connection-store.js';
 

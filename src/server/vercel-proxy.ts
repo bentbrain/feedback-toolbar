@@ -35,6 +35,8 @@ async function proxy(request: Request): Promise<Response> {
       'cookie',
       'content-type',
       'idempotency-key',
+      'x-feedback-project',
+      'x-feedback-origin',
       'origin',
       'sec-fetch-site',
       'sec-fetch-mode',

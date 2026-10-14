@@ -1,7 +1,13 @@
-import { test, expect, type Locator } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { projectSchema, publicJobSchema, threadSchema } from '../src/shared/models.js';
+
+async function signupFixture(page: Page, data: { name: string; email: string; password: string }) {
+  const response = await page.request.post('/api/auth/sign-up/email', { data });
+  expect(response.status()).toBe(200);
+}
 
 async function textContrast(element: Locator) {
   return element.evaluate((element) => {
@@ -234,7 +240,7 @@ test('new user creates a project, customizes its theme, and gets the installatio
   );
 });
 
-test('isolated toolbar authenticates independently and completes the feedback-to-agent loop', async ({
+test('isolated toolbar shares the service session and completes the feedback-to-agent loop', async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -243,14 +249,11 @@ test('isolated toolbar authenticates independently and completes the feedback-to
     if (message.type() === 'error' && message.text().includes('Content Security Policy'))
       errors.push(message.text());
   });
-  const account = await page.request.post('/api/auth/sign-up/email', {
-    data: {
-      name: 'Taylor Review',
-      email: `${randomUUID()}@example.invalid`,
-      password: randomUUID(),
-    },
+  await signupFixture(page, {
+    name: 'Taylor Review',
+    email: `${randomUUID()}@example.invalid`,
+    password: randomUUID(),
   });
-  expect(account.status()).toBe(200);
   const created = await page.request.post('/api/projects', {
     data: {
       name: 'Toolbar test',
@@ -266,17 +269,10 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
   if (!frame) throw new Error('Toolbar frame missing.');
   await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
-  await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toHaveCount(0);
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
   await expect(frame.locator('html')).toHaveCSS('--primary', '#788468');
   await expect(frame.locator('html')).toHaveCSS('--radius', '0px');
-  const popupPromise = page.waitForEvent('popup');
-  await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
-  const popup = await popupPromise;
-  await popup.waitForURL(/\/auth\?user_code=/);
-  await popup.getByRole('button', { name: 'Approve connection' }).click();
-  await expect(popup.getByText('Connection approved.')).toBeVisible();
-  await popup.close();
   await expect(frame.getByRole('button', { name: 'New feedback' })).toBeVisible({
     timeout: 15_000,
   });
@@ -402,7 +398,8 @@ test('isolated toolbar authenticates independently and completes the feedback-to
   );
   expect(inaccessible).toBe(true);
   await frame.getByRole('button', { name: 'Sign out', exact: true }).click();
-  await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toBeVisible();
+  await expect(page.locator('[data-feedback-host]')).toBeHidden();
+  expect((await page.request.get('/api/me')).status()).toBe(401);
   await frame.evaluate((projectId) => {
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -473,13 +470,6 @@ test('embedded toolbar reconciles older pages and retains an active resolved con
   const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
   if (!frame) throw new Error('Toolbar frame missing.');
   await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
-  const popupPromise = page.waitForEvent('popup');
-  await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
-  const popup = await popupPromise;
-  await popup.waitForURL(/\/auth\?user_code=/);
-  await popup.getByRole('button', { name: 'Approve connection' }).click();
-  await expect(popup.getByText('Connection approved.')).toBeVisible();
-  await popup.close();
   await expect(frame.getByRole('button', { name: 'Load earlier feedback' })).toBeVisible({
     timeout: 15_000,
   });
@@ -504,14 +494,11 @@ test('embedded toolbar reconciles older pages and retains an active resolved con
 test('filtered dashboard reconciles resolved cached rows while preserving loaded earlier conversations', async ({
   page,
 }) => {
-  const signup = await page.request.post('/api/auth/sign-up/email', {
-    data: {
-      name: 'Pagination reviewer',
-      email: `${randomUUID()}@example.invalid`,
-      password: randomUUID(),
-    },
+  await signupFixture(page, {
+    name: 'Pagination reviewer',
+    email: `${randomUUID()}@example.invalid`,
+    password: randomUUID(),
   });
-  expect(signup.status()).toBe(200);
   const project = z.object({ project: projectSchema }).parse(
     await (
       await page.request.post('/api/projects', {
@@ -566,4 +553,93 @@ test('filtered dashboard reconciles resolved cached rows while preserving loaded
   await expect(page.getByRole('button', { name: 'Resolve', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByText('Cached feedback 0', { exact: true })).toHaveCount(0);
+});
+
+test('toolbar stays hidden for guests, reuses a later service login, and follows dashboard sign-out', async ({
+  page,
+}) => {
+  await signupFixture(page, {
+    name: 'Shared session reviewer',
+    email: `${randomUUID()}@example.invalid`,
+    password: randomUUID(),
+  });
+  const project = z.object({ project: projectSchema }).parse(
+    await (
+      await page.request.post('/api/projects', {
+        data: { name: 'Shared browser session', origins: ['http://localhost:44321'] },
+      })
+    ).json(),
+  ).project;
+  const cookies = await page.context().cookies('http://localhost:44320');
+  await page.context().clearCookies();
+  await page.goto(`http://localhost:44321/?project=${project.id}`);
+  const host = page.locator('[data-feedback-host]');
+  await expect(host).toHaveCount(1);
+  await expect(host).toBeHidden();
+  await expect
+    .poll(() => page.frames().some((frame) => frame.url().includes('/toolbar?')))
+    .toBe(true);
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar frame missing');
+  await page.context().addCookies(cookies);
+  await expect(host).toBeVisible({ timeout: 15_000 });
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await expect(frame.getByRole('button', { name: 'New feedback' })).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'Sign in to Feedback' })).toHaveCount(0);
+  const dashboard = await page.context().newPage();
+  await dashboard.goto('http://localhost:44320/');
+  await dashboard.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await dashboard.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
+  await expect(dashboard.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect(host).toBeHidden({ timeout: 15_000 });
+});
+
+test('cookie-blocked toolbar requires explicit connection and ends with the approving session', async ({
+  page,
+}) => {
+  await signupFixture(page, {
+    name: 'Connected session reviewer',
+    email: `${randomUUID()}@example.invalid`,
+    password: randomUUID(),
+  });
+  const project = z.object({ project: projectSchema }).parse(
+    await (
+      await page.request.post('/api/projects', {
+        data: { name: 'Cookie-blocked website', origins: ['http://localhost:44321'] },
+      })
+    ).json(),
+  ).project;
+  await page.route('**/api/me', (route) =>
+    route.request().headers().authorization
+      ? route.continue()
+      : route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Browser blocked cookie access' }),
+        }),
+  );
+  await page.goto(`http://localhost:44321/?project=${project.id}`);
+  await expect(page.locator('[data-feedback-host]')).toBeHidden();
+  await page.goto(`http://localhost:44321/?project=${project.id}#feedback-connect`);
+  await expect(page).not.toHaveURL(/#feedback-connect/);
+  await expect(page.locator('[data-feedback-host]')).toBeVisible();
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar frame missing');
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  const popupPromise = page.waitForEvent('popup');
+  await frame.getByRole('button', { name: 'Sign in to Feedback' }).click();
+  const popup = await popupPromise;
+  await popup.waitForURL(/\/auth\?user_code=/);
+  await popup.getByRole('button', { name: 'Approve connection' }).click();
+  await expect(popup.getByText('Connection approved.')).toBeVisible();
+  await popup.close();
+  await expect(frame.getByRole('button', { name: 'New feedback' })).toBeVisible({
+    timeout: 15_000,
+  });
+  const signedOut = await page.request.post('/api/auth/sign-out', {
+    headers: { Origin: 'http://localhost:44320' },
+    data: {},
+  });
+  expect(signedOut.status()).toBe(200);
+  await expect(page.locator('[data-feedback-host]')).toBeHidden({ timeout: 15_000 });
 });

@@ -117,5 +117,5 @@ export function createConnectionStore(key: string, server: string) {
       }
     });
   };
-  return { read, start, current, signOut };
+  return { read, start, current, signOut, clear };
 }

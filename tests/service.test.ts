@@ -26,12 +26,14 @@ function fixture() {
       bearer?: string;
       origin?: string;
       key?: string;
+      headers?: Record<string, string>;
     } = {},
   ) =>
     await app.request(`${service}${path}`, {
       method: options.method ?? 'GET',
       headers: {
         'x-feedback-client-ip': '127.0.0.1',
+        ...options.headers,
         'Content-Type': path.startsWith('/api/auth/oauth2/')
           ? 'application/x-www-form-urlencoded'
           : 'application/json',
@@ -184,6 +186,117 @@ void test('independent accounts, project membership, viewer and agent permission
   assert.equal(stored.thread.messages.at(-1)?.kind, 'agent');
   assert.equal(stored.thread.messages.at(-1)?.author, 'Local agent');
 });
+void test('shared browser sessions are restricted to the embedded project and disappear on logout', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const outsider = await f.account('Outsider');
+  const project = await f.project(owner.cookie);
+  const other = await f.project(owner.cookie);
+  const headers = { 'x-feedback-project': project.id, 'x-feedback-origin': website };
+  assert.equal((await f.call('/api/me', { headers })).status, 401);
+  assert.equal((await f.call('/api/me', { cookie: outsider.cookie, headers })).status, 403);
+  assert.equal(
+    (
+      await f.call('/api/me', {
+        cookie: owner.cookie,
+        headers: { ...headers, 'x-feedback-origin': 'https://attacker.example' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call('/api/me', {
+        cookie: owner.cookie,
+        headers: { 'x-feedback-project': project.id },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await f.call('/api/me', {
+        cookie: owner.cookie,
+        headers: { ...headers, 'x-feedback-project': '' },
+      })
+    ).status,
+    400,
+  );
+  const me = await f.call('/api/me', { cookie: owner.cookie, headers });
+  assert.equal(me.status, 200);
+  assert.equal(z.object({ kind: z.string() }).parse(await me.json()).kind, 'embed');
+  const list = await f.call('/api/projects', { cookie: owner.cookie, headers });
+  assert.deepEqual(
+    z
+      .object({ projects: z.array(projectSchema) })
+      .parse(await list.json())
+      .projects.map((item) => item.id),
+    [project.id],
+  );
+  assert.equal(
+    (await f.call(`/api/projects/${other.id}/threads`, { cookie: owner.cookie, headers })).status,
+    403,
+  );
+  assert.equal(
+    (await f.call('/api/account/connections', { cookie: owner.cookie, headers })).status,
+    403,
+  );
+  assert.equal(
+    (await f.call('/api/auth/list-sessions', { cookie: owner.cookie, headers })).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/projects/${project.id}`, {
+        cookie: owner.cookie,
+        headers,
+        method: 'PATCH',
+        body: { name: 'Forbidden' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/projects/${project.id}/threads`, {
+        cookie: owner.cookie,
+        headers,
+        method: 'POST',
+        origin: 'https://attacker.example',
+        body: { context: f.context, body: 'forged' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/projects/${project.id}/threads`, {
+        cookie: owner.cookie,
+        headers,
+        method: 'POST',
+        origin: service,
+        body: { context: f.context, body: 'Browser session feedback' },
+      })
+    ).status,
+    201,
+  );
+  assert.equal(
+    (
+      await f.call('/api/auth/sign-out', {
+        cookie: owner.cookie,
+        method: 'POST',
+        origin: service,
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await f.call('/api/me', { cookie: owner.cookie, headers })).status, 401);
+});
 void test('maintained OAuth device approval is scoped, rotates refresh tokens and revokes access', async (t) => {
   const f = fixture();
   t.after(async () => {
@@ -270,6 +383,72 @@ void test('maintained OAuth device approval is scoped, rotates refresh tokens an
   });
   assert.equal(revoke.status, 200, await revoke.text());
   assert.equal((await f.call('/api/me', { bearer: renewed.access_token })).status, 401);
+});
+void test('device-approved toolbar grants end with their approving browser session', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const started = await f.call('/api/connections/start', {
+    method: 'POST',
+    body: { kind: 'embed', projectId: project.id, parentOrigin: website },
+  });
+  const device = z
+    .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+    .parse(await started.json());
+  assert.equal(
+    (
+      await f.call('/api/connections/approve', {
+        cookie: owner.cookie,
+        method: 'POST',
+        body: { code: device.user_code, accept: true },
+      })
+    ).status,
+    200,
+  );
+  const exchanged = await f.call('/api/auth/oauth2/token', {
+    method: 'POST',
+    body: {
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      client_id: device.clientId,
+      device_code: device.device_code,
+      resource: `${service}/api`,
+    },
+  });
+  assert.equal(exchanged.status, 200);
+  const grant = z
+    .object({ access_token: z.string(), refresh_token: z.string() })
+    .parse(await exchanged.json());
+  assert.equal((await f.call('/api/me', { bearer: grant.access_token })).status, 200);
+  assert.equal(
+    (
+      await f.call('/api/auth/sign-out', {
+        cookie: owner.cookie,
+        method: 'POST',
+        origin: service,
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await f.call('/api/me', { bearer: grant.access_token })).status, 401);
+  assert.equal(
+    (
+      await f.call('/api/auth/oauth2/token', {
+        method: 'POST',
+        body: {
+          grant_type: 'refresh_token',
+          client_id: device.clientId,
+          refresh_token: grant.refresh_token,
+          resource: `${service}/api`,
+        },
+      })
+    ).status,
+    400,
+  );
 });
 void test('public project IDs and unregistered origins cannot grant comment access', async (t) => {
   const f = fixture();

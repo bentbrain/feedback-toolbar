@@ -4,6 +4,7 @@ import { defaultEmojiDataResolver } from 'frimousse';
 import type { EmojiDataResolver } from 'frimousse';
 import { Loader2, SmilePlus } from 'lucide-react';
 import type { Thread } from '../../shared/models.js';
+import { getEmojiFavourites, recordEmojiChoice } from '../emoji-favourites.js';
 import { Button } from './ui/button.js';
 import {
   EmojiPicker,
@@ -14,12 +15,15 @@ import {
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from './ui/popover.js';
 
 function ReactionPicker({
+  actorId,
   onSelect,
   retryRef,
 }: {
+  actorId: string | undefined;
   onSelect: (emoji: string) => void;
   retryRef: RefObject<HTMLButtonElement | null>;
 }) {
+  const [favourites] = useState(() => (actorId ? getEmojiFavourites(actorId) : []));
   const [failed, setFailed] = useState(false);
   const errorId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -98,6 +102,28 @@ function ReactionPicker({
       }}
     >
       <EmojiPickerSearch ref={searchRef} aria-label="Search emojis" placeholder="Search emojis" />
+      {favourites.length > 0 ? (
+        <div className="shrink-0 border-b p-2">
+          <p className="mb-1 px-1 text-xs text-muted-foreground">Favourites</p>
+          <div role="group" aria-label="Favourite emojis" className="flex">
+            {favourites.map((emoji) => (
+              <Button
+                key={emoji}
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-8 shrink-0 p-0 text-lg"
+                aria-label={`React with ${emoji}`}
+                onClick={() => {
+                  onSelect(emoji);
+                }}
+              >
+                {emoji}
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <EmojiPickerContent />
       <EmojiPickerFooter />
     </EmojiPicker>
@@ -119,16 +145,18 @@ export function MessageReactions({
   const [pending, setPending] = useState<string | null>(null);
   const reacting = useRef(false);
   const retryRef = useRef<HTMLButtonElement>(null);
-  const emojis = [
-    ...new Set(['👍', '❤️', '👀', '🎉', ...message.reactions.map((reaction) => reaction.emoji)]),
-  ];
+  const emojis = [...new Set(message.reactions.map((reaction) => reaction.emoji))];
   const react = async (emoji: string) => {
     if (disabled || reacting.current) return;
     reacting.current = true;
     setPending(emoji);
     setOpen(false);
+    const removing = message.reactions.some(
+      (reaction) => reaction.emoji === emoji && reaction.actorId === actorId,
+    );
     try {
       await onReact(emoji);
+      if (actorId && !removing) await recordEmojiChoice(actorId, emoji);
     } finally {
       reacting.current = false;
       setPending(null);
@@ -137,7 +165,7 @@ export function MessageReactions({
   return (
     <div
       role="group"
-      className="mt-2 flex flex-wrap gap-1"
+      className="mt-2 flex flex-wrap items-center gap-1"
       aria-label="Reactions"
       aria-busy={pending !== null}
     >
@@ -153,7 +181,7 @@ export function MessageReactions({
             type="button"
             variant="outline"
             size="xs"
-            className="h-7 px-1.5 text-xs aria-pressed:bg-accent"
+            className="h-7 min-w-9 gap-1.5 px-1.5 text-xs aria-pressed:bg-accent"
             aria-label={`React with ${emoji}`}
             aria-pressed={pressed}
             aria-description={
@@ -167,8 +195,8 @@ export function MessageReactions({
             disabled={disabled || pending !== null}
             onClick={() => void react(emoji)}
           >
-            {pending === emoji ? <Loader2 className="size-3 animate-spin" /> : emoji}
-            {reactions.length || ''}
+            {pending === emoji ? <Loader2 className="size-3 animate-spin" /> : <span>{emoji}</span>}
+            {reactions.length > 1 ? <span className="tabular-nums">{reactions.length}</span> : null}
           </Button>
         );
       })}
@@ -178,7 +206,8 @@ export function MessageReactions({
             <Button
               type="button"
               variant="outline"
-              size="icon-xs"
+              size="icon-sm"
+              className="w-9"
               aria-label="Add reaction"
               disabled={disabled || pending !== null}
             />
@@ -201,7 +230,11 @@ export function MessageReactions({
         >
           <PopoverTitle className="sr-only">Add reaction</PopoverTitle>
           {open ? (
-            <ReactionPicker retryRef={retryRef} onSelect={(emoji) => void react(emoji)} />
+            <ReactionPicker
+              actorId={actorId}
+              retryRef={retryRef}
+              onSelect={(emoji) => void react(emoji)}
+            />
           ) : null}
         </PopoverContent>
       </Popover>

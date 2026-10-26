@@ -1807,3 +1807,80 @@ void test('completion retries a raced owner follow-up and excludes human connect
     undefined,
   );
 });
+
+void test('large supported conversations avoid repeated snapshot scans across paginated lists', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const original = await f.thread(owner.cookie, project.id);
+  const first = original.messages[0];
+  assert.ok(first);
+  const messages = Array.from({ length: 2400 }, (_, index) => ({
+    ...first,
+    id: `message-${index}`,
+    body: 'Map feedback.',
+  }));
+  const large = { ...original, messages, revision: 2400 };
+  assert.ok(Buffer.byteLength(JSON.stringify(large)) < 512_000);
+  await f.store.put('threads', large.id, large);
+  const job = jobSchema.parse({
+    id: 'large-request',
+    projectId: project.id,
+    threadId: large.id,
+    requestedBy: first.actorId,
+    revision: 2399,
+    snapshot: { ...large, messages: messages.slice(0, -1), revision: 2399 },
+    status: 'review',
+    createdAt: large.createdAt,
+    updatedAt: large.updatedAt,
+    leaseHash: null,
+    claimedBy: null,
+    leaseExpiresAt: null,
+    runId: null,
+    result: 'Submitted request finished.',
+    idempotencyKey: 'large-request',
+  });
+  await f.store.insert('jobs', job.id, job);
+  const start = performance.now();
+  const detail = z
+    .object({ thread: threadSchema })
+    .parse(await (await f.call(`/api/threads/${large.id}`, { cookie: owner.cookie })).json());
+  assert.equal(detail.thread.unsubmittedMessageCount, 1);
+  // A repeated JSON scan takes seconds for this supported input. Leave ample CI headroom.
+  assert.ok(
+    performance.now() - start < 1000,
+    'coverage must not rescan a large snapshot per message',
+  );
+  for (let index = 0; index < 50; index++) {
+    await f.store.insert('threads', `later-${index}`, { ...original, id: `later-${index}` });
+  }
+  await f.store.insert('threads', 'latest-large', { ...large, id: 'latest-large' });
+  const pageSchema = z.object({
+    threads: z.array(threadSchema),
+    nextBefore: z.number().nullable(),
+  });
+  const page = pageSchema.parse(
+    await (await f.call(`/api/projects/${project.id}/threads`, { cookie: owner.cookie })).json(),
+  );
+  assert.equal(page.threads.length, 50);
+  assert.equal(
+    page.threads.find((thread) => thread.id === 'latest-large')?.unsubmittedMessageCount,
+    2400,
+  );
+  assert.ok(page.nextBefore);
+  const earlier = pageSchema.parse(
+    await (
+      await f.call(`/api/projects/${project.id}/threads?before=${page.nextBefore}`, {
+        cookie: owner.cookie,
+      })
+    ).json(),
+  );
+  assert.equal(
+    earlier.threads.find((thread) => thread.id === large.id)?.unsubmittedMessageCount,
+    1,
+  );
+});

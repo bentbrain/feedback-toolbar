@@ -130,20 +130,21 @@ export class DocumentStore {
     const rows = (
       await this.database.execute({
         sql: `SELECT threads.id, (
-          SELECT count(*) FROM json_each(threads.data,'$.messages') message
-          WHERE json_extract(message.value,'$.kind')='human'
-          AND NOT EXISTS (
-            SELECT 1 FROM documents completion
-            WHERE completion.kind='jobs' AND completion.id=json_extract(message.value,'$.id')
-            AND json_extract(completion.data,'$.threadId')=threads.id
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM json_each((
+          SELECT count(*) FROM (
+            SELECT json_extract(message.value,'$.id') AS id
+            FROM json_each(threads.data,'$.messages') message
+            WHERE json_extract(message.value,'$.kind')='human'
+            EXCEPT
+            SELECT json_extract(submitted.value,'$.id')
+            FROM json_each((
               SELECT json_extract(job.data,'$.snapshot.messages') FROM documents job
               WHERE job.kind='jobs' AND json_extract(job.data,'$.threadId')=threads.id
               ORDER BY job.rowid DESC LIMIT 1
             )) submitted
-            WHERE json_extract(submitted.value,'$.id')=json_extract(message.value,'$.id')
+            EXCEPT
+            SELECT completion.id FROM documents completion
+            WHERE completion.kind='jobs'
+            AND json_extract(completion.data,'$.threadId')=threads.id
           )
         ) AS pending FROM documents threads
         WHERE threads.kind='threads' AND threads.id IN (${threads.map(() => '?').join(',')})`,

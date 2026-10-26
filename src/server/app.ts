@@ -248,6 +248,8 @@ export function createApp(options: Options) {
       throw new HttpError(403, 'This request belongs to another account or service.');
     return { metadata, project, device };
   };
+  const publicThread = async (thread: Thread) =>
+    (await store.withFeedbackState([thread]))[0] ?? thread;
   const publicJob = (job: z.infer<typeof jobSchema>) => publicJobSchema.parse(job);
   const addMessage = async (thread: Thread, principal: Credential, user: User, body: string) => {
     const at = now();
@@ -912,7 +914,7 @@ export function createApp(options: Options) {
       status: z.enum(['open', 'resolved']).optional().parse(c.req.query('status')),
     };
     const page = await store.page('threads', project.id, threadSchema, before, filters);
-    const threads = page.items;
+    const threads = await store.withFeedbackState(page.items);
     const jobs = (await projectJobs(project.id)).map(publicJob);
     return c.json({
       threads,
@@ -949,13 +951,13 @@ export function createApp(options: Options) {
       updatedAt: now(),
     });
     const created = await addMessage(thread, principal, c.get('user'), input.body);
-    return c.json({ thread: created }, 201);
+    return c.json({ thread: await publicThread(created) }, 201);
   });
   app.get('/api/threads/:id', async (c) => {
     const thread = requireValue(await store.get('threads', c.req.param('id'), threadSchema));
     await access(c.get('principal'), thread.projectId);
     return c.json({
-      thread,
+      thread: await publicThread(thread),
       jobs: (
         await store.query(
           'jobs',
@@ -975,7 +977,7 @@ export function createApp(options: Options) {
     await access(c.get('principal'), thread.projectId, true);
     const input = messageInput.parse(await c.req.json());
     const updated = await addMessage(thread, c.get('principal'), c.get('user'), input.body);
-    return c.json({ thread: updated }, 201);
+    return c.json({ thread: await publicThread(updated) }, 201);
   });
   app.post('/api/threads/:id/reactions', async (c) => {
     const thread = requireValue(await store.get('threads', c.req.param('id'), threadSchema));
@@ -1005,7 +1007,7 @@ export function createApp(options: Options) {
       return boundedThread(current);
     });
     await store.audit(thread.projectId, actorId, 'reaction.updated', thread.id);
-    return c.json({ thread: updated });
+    return c.json({ thread: await publicThread(updated) });
   });
   app.patch('/api/threads/:id', async (c) => {
     requireHuman(c.get('principal'));
@@ -1022,7 +1024,7 @@ export function createApp(options: Options) {
       revision: current.revision + 1,
     }));
     await store.audit(thread.projectId, c.get('user').id, 'thread.updated', thread.id);
-    return c.json({ thread: updated });
+    return c.json({ thread: await publicThread(updated) });
   });
   app.post('/api/threads/:id/work', async (c) => {
     const principal = c.get('principal');
@@ -1049,7 +1051,7 @@ export function createApp(options: Options) {
     if (previous) {
       if (previous.threadId !== thread.id || previous.revision !== input.revision)
         throw new HttpError(409, 'Request key was used for different feedback.');
-      return c.json({ job: publicJob(previous) }, 201);
+      return c.json({ job: publicJob(previous), thread: await publicThread(thread) }, 201);
     }
     if (thread.revision !== input.revision)
       throw new HttpError(409, 'Feedback changed. Refresh it before sending.');
@@ -1088,11 +1090,11 @@ export function createApp(options: Options) {
         )
       )[0];
       if (saved?.threadId === thread.id && saved.revision === input.revision)
-        return c.json({ job: publicJob(saved) }, 201);
+        return c.json({ job: publicJob(saved), thread: await publicThread(thread) }, 201);
       throw new HttpError(409, 'This thread already has work in progress.');
     }
     await store.audit(thread.projectId, principal.userId, 'work.requested', job.id);
-    return c.json({ job: publicJob(job) }, 201);
+    return c.json({ job: publicJob(job), thread: await publicThread(thread) }, 201);
   });
   app.get('/api/projects/:id/work', async (c) => {
     await access(c.get('principal'), c.req.param('id'));
@@ -1200,7 +1202,7 @@ export function createApp(options: Options) {
           [store.auditStatement(job.projectId, principal.id, 'work.completed', job.id)],
         )
       )
-        return c.json({ job: publicJob(job), thread });
+        return c.json({ job: publicJob(job), thread: await publicThread(thread) });
     }
     throw new HttpError(409, 'Feedback changed concurrently. Retry completion.');
   });

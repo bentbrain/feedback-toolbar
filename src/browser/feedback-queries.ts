@@ -122,7 +122,11 @@ export function useFeedback(
     void client.invalidateQueries({ queryKey: ['feedback', projectId] });
   };
   const acceptJob = async (result: unknown) => {
-    const received = z.object({ job: publicJobSchema }).parse(result).job;
+    const response = z
+      .object({ job: publicJobSchema, thread: threadSchema.optional() })
+      .parse(result);
+    if (response.thread) await acceptThread({ thread: response.thread });
+    const received = response.job;
     await Promise.all([
       client.cancelQueries({ queryKey: ['feedback', projectId] }),
       client.cancelQueries({ queryKey: ['thread', projectId, received.threadId] }),
@@ -143,7 +147,10 @@ export function useFeedback(
           pages: data.pages.map((page) => ({ ...page, jobs: update(page.jobs) })),
         },
     );
-    void client.invalidateQueries({ queryKey: ['feedback', projectId] });
+    void Promise.all([
+      client.invalidateQueries({ queryKey: ['feedback', projectId] }),
+      client.invalidateQueries({ queryKey: key }),
+    ]);
     return job;
   };
   return { feedback, detail, threads, jobs, acceptThread, acceptJob };

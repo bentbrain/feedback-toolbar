@@ -40,7 +40,13 @@ import { Textarea } from './components/ui/textarea.js';
 import { Label } from './components/ui/label.js';
 import { TooltipProvider } from './components/ui/tooltip.js';
 import { Toaster } from './components/ui/sonner.js';
-import { Conversation, Empty, IconAction, JobBadge } from './components/common.js';
+import {
+  Conversation,
+  Empty,
+  IconAction,
+  JobBadge,
+  UnsubmittedFeedback,
+} from './components/common.js';
 import type { Work } from './components/common.js';
 import { ConnectionError, deviceConnectionSchema, exchangeConnection } from '../shared/oauth.js';
 import { boundedMessage, maxPins } from './pin-protocol.js';
@@ -634,8 +640,11 @@ function Toolbar() {
   };
   const acceptJob = (result: unknown) => {
     if (currentContext.current !== mutationContext) return null;
-    const received = z.object({ job: publicJobSchema }).parse(result).job;
-    const job = newestJob(received, cachedJobs.current);
+    const response = z
+      .object({ job: publicJobSchema, thread: threadSchema.optional() })
+      .parse(result);
+    if (response.thread) acceptThread({ thread: response.thread });
+    const job = newestJob(response.job, cachedJobs.current);
     version.current++;
     setJobs((previous) =>
       previous.some((item) => item.id === job.id)
@@ -908,6 +917,7 @@ function Toolbar() {
                             {thread.messageCount ?? thread.messages.length} messages
                           </Badge>
                           {job ? <JobBadge job={job} /> : null}
+                          <UnsubmittedFeedback thread={thread} job={job} />
                         </span>
                       </Button>
                     );

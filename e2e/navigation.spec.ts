@@ -180,7 +180,9 @@ test('thread detail keeps the newest work when an older run is absent from the l
   await page.getByText('open conversation', { exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('button', { name: 'Cancel work', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Send to agent', exact: true })).toBeDisabled();
+  await expect(
+    dialog.getByRole('button', { name: 'Send remaining feedback', exact: true }),
+  ).toBeDisabled();
   await expect(dialog.getByText('Ready for review', { exact: true })).toBeHidden();
 });
 

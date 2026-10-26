@@ -243,6 +243,14 @@ export function JobBadge({ job }: { job: Work }) {
     </Badge>
   );
 }
+export function UnsubmittedFeedback({ thread, job }: { thread: Thread; job?: Work | undefined }) {
+  if (!thread.unsubmittedMessageCount) return null;
+  return (
+    <Badge variant="secondary" className="border-0 bg-orange-50 text-[10px] text-orange-700">
+      {job ? 'New feedback not sent to agent' : 'Not sent to agent'}
+    </Badge>
+  );
+}
 export function Conversation({
   thread,
   job,
@@ -273,6 +281,8 @@ export function Conversation({
   const locked = useRef(false);
   const actionError = useRef<string | number | null>(null);
   const busy = Boolean(pending);
+  const unsubmitted = Boolean(thread.unsubmittedMessageCount);
+  const activeWork = !!job && ['queued', 'running'].includes(job.status);
   const work = async (label: string, action: () => Promise<void>) => {
     if (locked.current) return;
     locked.current = true;
@@ -377,7 +387,9 @@ export function Conversation({
                     ? 'The runner lost connection. Check its local run record before cancelling or requesting a retry.'
                     : 'Agent running.'
                   : job.status === 'review'
-                    ? 'Review the proposed change before resolving this thread.'
+                    ? unsubmitted
+                      ? 'The submitted request is ready for review. Newer feedback has not been sent.'
+                      : 'Review the proposed change before resolving this thread.'
                     : job.status === 'failed' && job.result
                       ? job.result
                       : `Work ${job.status}.`}
@@ -385,6 +397,18 @@ export function Conversation({
           </div>
         ) : null}
       </div>
+      {unsubmitted ? (
+        <div role="status" className="shrink-0 space-y-2 border-t bg-card px-5 py-3">
+          <UnsubmittedFeedback thread={thread} job={job} />
+          <p className="text-[11px] leading-5 text-muted-foreground">
+            {activeWork
+              ? 'This feedback is outside the current request. Send it after the current work finishes.'
+              : role === 'owner'
+                ? 'Send the remaining feedback to request another agent run.'
+                : 'A project owner must send this feedback to request an agent run.'}
+          </p>
+        </div>
+      ) : null}
       {role !== 'viewer' ? (
         <form
           className="grid shrink-0 gap-3 border-t bg-card px-5 py-4"
@@ -418,7 +442,7 @@ export function Conversation({
                   type="button"
                   variant="outline"
                   size="xs"
-                  disabled={busy || (!!job && ['queued', 'running'].includes(job.status))}
+                  disabled={busy || activeWork}
                   onClick={() => void work('send', onSend)}
                 >
                   {pending === 'send' ? (
@@ -426,7 +450,11 @@ export function Conversation({
                   ) : (
                     <Bot className="size-3" />
                   )}
-                  {pending === 'send' ? 'Sending to agent…' : 'Send to agent'}
+                  {pending === 'send'
+                    ? 'Sending to agent…'
+                    : job && unsubmitted
+                      ? 'Send remaining feedback'
+                      : 'Send to agent'}
                 </Button>
               ) : null}
               <Button

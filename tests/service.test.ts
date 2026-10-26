@@ -1542,3 +1542,345 @@ void test('Unicode reaction mutations retain the authenticated API rate limit', 
   assert.equal(limited, true);
   assert.ok(successful > 200 && successful <= 240);
 });
+
+void test('frozen work completion preserves unsubmitted follow-ups until an explicit owner request', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const member = await f.account('Member');
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id, 'Fix map drag selection.');
+  const agent = await f.agent(owner.cookie, project.id);
+  const schema = threadSchema.extend({ unsubmittedMessageCount: z.number().int() });
+  const detail = async () =>
+    z
+      .object({ thread: schema })
+      .parse(await (await f.call(`/api/threads/${thread.id}`, { cookie: owner.cookie })).json())
+      .thread;
+  const count = async (expected: number) => {
+    assert.equal((await detail()).unsubmittedMessageCount, expected);
+    const list = z
+      .object({ threads: z.array(schema) })
+      .parse(await (await f.call(`/api/projects/${project.id}/threads`, { bearer: agent })).json());
+    assert.equal(list.threads[0]?.unsubmittedMessageCount, expected);
+  };
+  await count(1);
+  const request = { revision: thread.revision, idempotencyKey: 'frozen-map-request' };
+  const queued = z.object({ job: publicJobSchema }).parse(
+    await (
+      await f.call(`/api/threads/${thread.id}/work`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: request,
+      })
+    ).json(),
+  ).job;
+  await count(0);
+  const claim = z
+    .object({ job: publicJobSchema.extend({ snapshot: threadSchema }), lease: z.string() })
+    .parse(
+      await (
+        await f.call(`/api/projects/${project.id}/work/claim`, {
+          method: 'POST',
+          bearer: agent,
+          body: {},
+        })
+      ).json(),
+    );
+  await f.call(`/api/threads/${thread.id}/messages`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { body: 'Show roads and highways.' },
+  });
+  await count(1);
+  await f.call(`/api/threads/${thread.id}/messages`, {
+    method: 'POST',
+    bearer: agent,
+    body: { body: 'Still working on drag selection.' },
+  });
+  const firstMessage = thread.messages[0];
+  assert.ok(firstMessage);
+  await f.call(`/api/threads/${thread.id}/reactions`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { messageId: firstMessage.id, emoji: '👍' },
+  });
+  await count(1);
+  const result = await f.call(`/api/work/${queued.id}/complete`, {
+    method: 'POST',
+    bearer: agent,
+    body: { lease: claim.lease, status: 'review', body: 'Drag selection fixed.' },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(
+    z.object({ thread: schema }).parse(await result.json()).thread.unsubmittedMessageCount,
+    1,
+  );
+  await count(1);
+  const stored = await f.store.get('jobs', queued.id, jobSchema);
+  assert.deepEqual(stored?.snapshot, claim.job.snapshot);
+  assert.equal(stored.snapshot.messages.length, 1);
+  // A lost acknowledgement must return the original job without absorbing later comments.
+  const retry = await f.call(`/api/threads/${thread.id}/work`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: request,
+  });
+  assert.equal(z.object({ job: publicJobSchema }).parse(await retry.json()).job.id, queued.id);
+  await count(1);
+  assert.deepEqual(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: agent,
+        body: {},
+      })
+    ).json(),
+    { job: null },
+  );
+  await f.call(`/api/projects/${project.id}/members`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { email: member.email, role: 'member' },
+  });
+  const current = await detail();
+  const next = { revision: current.revision, idempotencyKey: 'remaining-map-request' };
+  for (const credentials of [{ cookie: member.cookie }, { bearer: agent }]) {
+    assert.equal(
+      (
+        await f.call(`/api/threads/${thread.id}/work`, {
+          method: 'POST',
+          ...credentials,
+          body: next,
+        })
+      ).status,
+      403,
+    );
+  }
+  assert.equal(
+    (
+      await f.call(`/api/threads/${thread.id}/work`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { ...next, revision: thread.revision },
+      })
+    ).status,
+    409,
+  );
+  const submitted = await Promise.all(
+    [1, 2].map(() =>
+      f.call(`/api/threads/${thread.id}/work`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: next,
+      }),
+    ),
+  );
+  assert.ok(submitted.every((response) => response.status === 201));
+  const jobs = await Promise.all(
+    submitted.map(
+      async (response) => z.object({ job: publicJobSchema }).parse(await response.json()).job,
+    ),
+  );
+  assert.equal(jobs[0]?.id, jobs[1]?.id);
+  await count(0);
+  const remaining = await f.store.get('jobs', jobs[0]?.id ?? '', jobSchema);
+  assert.ok(
+    remaining?.snapshot.messages.some((message) => message.body === 'Show roads and highways.'),
+  );
+  // Cancellation never quietly authorizes another run or changes a frozen snapshot.
+  assert.equal(
+    (
+      await f.call(`/api/work/${remaining?.id}/cancel`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  await f.call(`/api/threads/${thread.id}/messages`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { body: 'Use wider road lines.' },
+  });
+  await count(1);
+});
+
+void test('completion retries a raced owner follow-up and excludes human connector completion summaries', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id);
+  const device = z
+    .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+    .parse(
+      await (
+        await f.call('/api/connections/start', {
+          method: 'POST',
+          body: { kind: 'personal', projectId: null, parentOrigin: null },
+        })
+      ).json(),
+    );
+  assert.equal(
+    (
+      await f.call('/api/connections/approve', {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { code: device.user_code, accept: true },
+      })
+    ).status,
+    200,
+  );
+  const credential = z.object({ access_token: z.string() }).parse(
+    await (
+      await f.call('/api/auth/oauth2/token', {
+        method: 'POST',
+        body: {
+          client_id: device.clientId,
+          device_code: device.device_code,
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          resource: `${service}/api`,
+        },
+      })
+    ).json(),
+  );
+  await f.call(`/api/threads/${thread.id}/work`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { revision: thread.revision, idempotencyKey: 'race' },
+  });
+  const claim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: credential.access_token,
+        body: {},
+      })
+    ).json(),
+  );
+  const batch = f.store.database.batch.bind(f.store.database);
+  let raced = false;
+  f.store.database.batch = async (statements) => {
+    if (
+      !raced &&
+      statements.some(
+        (statement) => statement.params[1] === 'jobs' && statement.params[2] === claim.job.id,
+      )
+    ) {
+      raced = true;
+      const appended = await f.call(`/api/threads/${thread.id}/messages`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { body: 'Keep this raced follow-up pending.' },
+      });
+      assert.equal(appended.status, 201);
+    }
+    await batch(statements);
+  };
+  const response = await f.call(`/api/work/${claim.job.id}/complete`, {
+    method: 'POST',
+    bearer: credential.access_token,
+    body: {
+      lease: claim.lease,
+      status: 'review',
+      body: 'Original request completed by the account connector.',
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(raced, true);
+  const completed = z.object({ thread: threadSchema }).parse(await response.json()).thread;
+  assert.equal(completed.messages.length, 3);
+  assert.equal(completed.messages.at(-1)?.kind, 'human');
+  assert.equal(completed.unsubmittedMessageCount, 1);
+  assert.equal(completed.messages.filter((message) => message.id === claim.job.id).length, 1);
+  assert.equal((await f.store.get('jobs', claim.job.id, jobSchema))?.snapshot.messages.length, 1);
+  assert.equal(
+    (await f.store.get('threads', thread.id, threadSchema))?.unsubmittedMessageCount,
+    undefined,
+  );
+});
+
+void test('large supported conversations avoid repeated snapshot scans across paginated lists', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const original = await f.thread(owner.cookie, project.id);
+  const first = original.messages[0];
+  assert.ok(first);
+  const messages = Array.from({ length: 2400 }, (_, index) => ({
+    ...first,
+    id: `message-${index}`,
+    body: 'Map feedback.',
+  }));
+  const large = { ...original, messages, revision: 2400 };
+  assert.ok(Buffer.byteLength(JSON.stringify(large)) < 512_000);
+  await f.store.put('threads', large.id, large);
+  const job = jobSchema.parse({
+    id: 'large-request',
+    projectId: project.id,
+    threadId: large.id,
+    requestedBy: first.actorId,
+    revision: 2399,
+    snapshot: { ...large, messages: messages.slice(0, -1), revision: 2399 },
+    status: 'review',
+    createdAt: large.createdAt,
+    updatedAt: large.updatedAt,
+    leaseHash: null,
+    claimedBy: null,
+    leaseExpiresAt: null,
+    runId: null,
+    result: 'Submitted request finished.',
+    idempotencyKey: 'large-request',
+  });
+  await f.store.insert('jobs', job.id, job);
+  const start = performance.now();
+  const detail = z
+    .object({ thread: threadSchema })
+    .parse(await (await f.call(`/api/threads/${large.id}`, { cookie: owner.cookie })).json());
+  assert.equal(detail.thread.unsubmittedMessageCount, 1);
+  // A repeated JSON scan takes seconds for this supported input. Leave ample CI headroom.
+  assert.ok(
+    performance.now() - start < 1000,
+    'coverage must not rescan a large snapshot per message',
+  );
+  for (let index = 0; index < 50; index++) {
+    await f.store.insert('threads', `later-${index}`, { ...original, id: `later-${index}` });
+  }
+  await f.store.insert('threads', 'latest-large', { ...large, id: 'latest-large' });
+  const pageSchema = z.object({
+    threads: z.array(threadSchema),
+    nextBefore: z.number().nullable(),
+  });
+  const page = pageSchema.parse(
+    await (await f.call(`/api/projects/${project.id}/threads`, { cookie: owner.cookie })).json(),
+  );
+  assert.equal(page.threads.length, 50);
+  assert.equal(
+    page.threads.find((thread) => thread.id === 'latest-large')?.unsubmittedMessageCount,
+    2400,
+  );
+  assert.ok(page.nextBefore);
+  const earlier = pageSchema.parse(
+    await (
+      await f.call(`/api/projects/${project.id}/threads?before=${page.nextBefore}`, {
+        cookie: owner.cookie,
+      })
+    ).json(),
+  );
+  assert.equal(
+    earlier.threads.find((thread) => thread.id === large.id)?.unsubmittedMessageCount,
+    1,
+  );
+});

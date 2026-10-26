@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { z } from 'zod';
-import { publicJobSchema } from '../shared/models.js';
+import { publicJobSchema, threadSchema } from '../shared/models.js';
 import type { Thread } from '../shared/models.js';
 import { ApiError } from './ui.js';
 
@@ -24,7 +24,9 @@ export async function requestWork(
       method: 'POST',
       body: { revision: thread.revision, idempotencyKey },
     });
-    const response = z.object({ job: publicJobSchema }).parse(result);
+    const response = z
+      .object({ job: publicJobSchema, thread: threadSchema.optional() })
+      .parse(result);
     keys.delete(identity);
     return response;
   } catch (error) {

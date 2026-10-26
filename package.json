@@ -104,6 +104,8 @@
     "url": "https://github.com/bentbrain/feedback-toolbar.git"
   },
   "overrides": {
-    "better-call": "1.4.2"
+    "better-call": "1.4.2",
+    "body-parser": "2.4.0",
+    "undici": "7.30.1"
   }
 }

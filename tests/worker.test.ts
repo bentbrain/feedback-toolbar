@@ -132,8 +132,10 @@ void test(
         .object({ token: z.string() })
         .parse(await call(`/api/projects/${project.id}/credentials`, { name: 'Runtime agent' }));
       const claimed = z
-        .object({ job: publicJobSchema, lease: z.string() })
+        .object({ job: publicJobSchema.extend({ snapshot: threadSchema }), lease: z.string() })
         .parse(await call(`/api/projects/${project.id}/work/claim`, {}, credential.token));
+      await call(`/api/threads/${thread.id}/messages`, { body: 'Show roads and highways too.' });
+      assert.equal(claimed.job.snapshot.messages.length, 1);
       const completed = z
         .object({ job: publicJobSchema, thread: threadSchema })
         .parse(
@@ -144,6 +146,14 @@ void test(
           ),
         );
       assert.equal(completed.job.status, 'review');
+      assert.equal(completed.thread.unsubmittedMessageCount, 1);
+      const previews = z
+        .object({ threads: z.array(threadSchema) })
+        .parse(await call(`/api/projects/${project.id}/threads`, undefined, credential.token));
+      assert.equal(previews.threads[0]?.unsubmittedMessageCount, 1);
+      assert.deepEqual(await call(`/api/projects/${project.id}/work/claim`, {}, credential.token), {
+        job: null,
+      });
       assert.equal(completed.thread.messages.at(-1)?.kind, 'agent');
       assert.equal(completed.thread.context.url, 'http://localhost:4311/');
       const login = await fetch(`${url}/api/auth/sign-in/email`, {

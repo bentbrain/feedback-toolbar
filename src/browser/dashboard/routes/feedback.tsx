@@ -16,7 +16,14 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog.js';
 import { Tabs, TabsList, TabsTrigger } from '../../components/ui/tabs.js';
-import { Conversation, Empty, JobBadge, PageHeading, Person } from '../../components/common.js';
+import {
+  Conversation,
+  Empty,
+  JobBadge,
+  PageHeading,
+  Person,
+  UnsubmittedFeedback,
+} from '../../components/common.js';
 
 import { useProject } from '../project-layout.js';
 
@@ -139,6 +146,7 @@ export default function FeedbackRoute() {
                       {thread.status}
                     </Badge>
                     {job ? <JobBadge job={job} /> : null}
+                    <UnsubmittedFeedback thread={thread} job={job} />
                   </div>
                 </div>
                 <div className="ml-3 hidden items-center gap-3 text-[10px] text-muted-foreground sm:flex">

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AuthenticationDatabase } from './auth.js';
 import { eventSchema } from '../shared/models.js';
+import type { Thread } from '../shared/models.js';
 import { HttpError } from './security.js';
 
 export interface Statement {
@@ -121,6 +122,41 @@ export class DocumentStore {
       items: visible.map((row) => schema.parse(JSON.parse(row.data))),
       nextBefore: rows.length > 50 ? (visible.at(-1)?.position ?? null) : null,
     };
+  }
+  // Derive coverage from immutable snapshots, including jobs outside the recent-job page.
+  // Keep it out of stored threads so queueing never changes a thread revision or snapshot.
+  async withFeedbackState(threads: Thread[]): Promise<Thread[]> {
+    if (!threads.length) return [];
+    const rows = (
+      await this.database.execute({
+        sql: `SELECT threads.id, (
+          SELECT count(*) FROM json_each(threads.data,'$.messages') message
+          WHERE json_extract(message.value,'$.kind')='human'
+          AND NOT EXISTS (
+            SELECT 1 FROM documents completion
+            WHERE completion.kind='jobs' AND completion.id=json_extract(message.value,'$.id')
+            AND json_extract(completion.data,'$.threadId')=threads.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each((
+              SELECT json_extract(job.data,'$.snapshot.messages') FROM documents job
+              WHERE job.kind='jobs' AND json_extract(job.data,'$.threadId')=threads.id
+              ORDER BY job.rowid DESC LIMIT 1
+            )) submitted
+            WHERE json_extract(submitted.value,'$.id')=json_extract(message.value,'$.id')
+          )
+        ) AS pending FROM documents threads
+        WHERE threads.kind='threads' AND threads.id IN (${threads.map(() => '?').join(',')})`,
+        params: threads.map((thread) => thread.id),
+      })
+    ).rows.map((row) =>
+      z.object({ id: z.string(), pending: z.number().int().nonnegative() }).parse(row),
+    );
+    const counts = new Map(rows.map((row) => [row.id, row.pending]));
+    return threads.map((thread) => ({
+      ...thread,
+      unsubmittedMessageCount: counts.get(thread.id) ?? 0,
+    }));
   }
   write(kind: string, id: string, value: unknown, insert = false): Statement {
     return {

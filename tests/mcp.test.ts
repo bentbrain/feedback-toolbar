@@ -148,12 +148,18 @@ void test(
       revision: thread.revision,
       idempotencyKey: randomUUID(),
     });
+    await call(`/api/threads/${thread.id}/messages`, { body: 'Also show roads and highways.' });
+    const pending = z
+      .object({ thread: threadSchema })
+      .parse(JSON.parse((await tool('get_thread', { threadId: thread.id })).text));
+    assert.equal(pending.thread.unsubmittedMessageCount, 1);
     const claim = await tool('claim_work');
     assert.equal(claim.error, false);
     const claimed = z
       .object({ job: publicJobSchema.extend({ snapshot: threadSchema }), lease: z.string() })
       .parse(JSON.parse(claim.text));
     assert.equal(claimed.job.snapshot.id, thread.id);
+    assert.equal(claimed.job.snapshot.messages.length, 1);
     assert.equal(
       (
         await tool('heartbeat_work', {
@@ -178,6 +184,15 @@ void test(
     assert.equal(completed.job.status, 'review');
     assert.equal(completed.thread.status, 'open');
     assert.equal(completed.thread.messages.at(-1)?.kind, 'agent');
+    assert.equal(completed.thread.unsubmittedMessageCount, 1);
+    const remaining = z
+      .object({ threads: z.array(threadSchema) })
+      .parse(JSON.parse((await tool('list_threads')).text));
+    assert.equal(remaining.threads[0]?.unsubmittedMessageCount, 1);
+    assert.equal(
+      z.object({ job: z.null() }).parse(JSON.parse((await tool('claim_work')).text)).job,
+      null,
+    );
     await call(`/api/threads/${thread.id}/work`, {
       revision: completed.thread.revision,
       idempotencyKey: randomUUID(),

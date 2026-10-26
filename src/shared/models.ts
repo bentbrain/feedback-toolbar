@@ -133,6 +133,8 @@ export const threadSchema = z.object({
   status: z.enum(['open', 'resolved']),
   messages: z.array(messageSchema),
   messageCount: z.number().int().nonnegative().optional(),
+  // Response-only coverage of human comments by the latest frozen work request.
+  unsubmittedMessageCount: z.number().int().nonnegative().optional(),
   revision: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),

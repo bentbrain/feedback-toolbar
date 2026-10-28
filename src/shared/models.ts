@@ -60,6 +60,7 @@ export const projectSchema = z.object({
   theme: themeSchema,
   createdAt: z.string(),
   createdBy: z.string(),
+  workVersion: z.number().int().nonnegative().optional(),
 });
 export const projectInputSchema = z
   .object({
@@ -142,6 +143,62 @@ export const threadSchema = z.object({
 export const threadInputSchema = z
   .object({ context: contextSchema, body: z.string().trim().min(1).max(8000) })
   .strict();
+const evidenceUrl = z
+  .url()
+  .max(2000)
+  .refine((value) => new URL(value).protocol === 'https:', 'Use an HTTPS evidence link.');
+export const deliveryInputSchema = z
+  .object({
+    stage: z.enum(['planning', 'implemented', 'reviewed', 'merged', 'deployed', 'verified']),
+    summary: z.string().trim().min(1).max(2000),
+    remaining: z.array(z.string().trim().min(1).max(500)).max(50),
+    runUrl: z
+      .string()
+      .max(2000)
+      .refine(
+        (value) => /^t3-thread:\/\/v1\/[^\s]+$/.test(value) || evidenceUrl.safeParse(value).success,
+        'Use a run link.',
+      )
+      .optional(),
+    pullRequestUrl: evidenceUrl.optional(),
+    reviewUrl: evidenceUrl.optional(),
+    deploymentUrl: evidenceUrl.optional(),
+    verificationUrl: evidenceUrl.optional(),
+    commit: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const reviewed = ['reviewed', 'merged', 'deployed', 'verified'].includes(value.stage);
+    const merged = ['merged', 'deployed', 'verified'].includes(value.stage);
+    const deployed = ['deployed', 'verified'].includes(value.stage);
+    if (
+      (reviewed && (!value.pullRequestUrl || !value.reviewUrl)) ||
+      (merged && !value.commit) ||
+      (deployed && !value.deploymentUrl)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Record the PR, review, exact commit and deployment evidence required by this delivery stage.',
+      });
+    if (
+      value.stage === 'verified' &&
+      (value.remaining.length ||
+        !value.pullRequestUrl ||
+        !value.reviewUrl ||
+        !value.deploymentUrl ||
+        !value.verificationUrl ||
+        !value.commit)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Verified delivery requires no remaining work and PR, review, deployment, verification and exact-commit evidence.',
+      });
+  });
 export const jobSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -158,12 +215,20 @@ export const jobSchema = z.object({
   runId: z.string().nullable(),
   result: z.string().nullable(),
   idempotencyKey: z.string(),
+  delivery: z.object({ details: deliveryInputSchema, reportedAt: z.string() }).optional(),
+  recovery: z
+    .object({ inspection: z.string(), resumedAt: z.string(), previousRunId: z.string().nullable() })
+    .optional(),
 });
-export const publicJobSchema = jobSchema.omit({
-  leaseHash: true,
-  snapshot: true,
-  idempotencyKey: true,
-});
+export const publicJobSchema = jobSchema
+  .omit({
+    leaseHash: true,
+    snapshot: true,
+    idempotencyKey: true,
+  })
+  .extend({
+    attention: z.enum(['unclaimed', 'interrupted', 'remaining', 'unverified']).optional(),
+  });
 export const eventSchema = z.object({
   seq: z.number(),
   projectId: z.string(),

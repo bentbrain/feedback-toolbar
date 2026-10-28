@@ -1884,3 +1884,598 @@ void test('large supported conversations avoid repeated snapshot scans across pa
     1,
   );
 });
+
+void test('delivery recovery retains prior work, fences stale runners and keeps remaining work open', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id, 'Improve map detail and grid ordering.');
+  const agent = await f.agent(owner.cookie, project.id);
+  const other = await f.agent(owner.cookie, project.id, 'Other runner');
+  const queued = await f.call(`/api/threads/${thread.id}/work`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { revision: thread.revision, idempotencyKey: 'delivery-recovery' },
+  });
+  const requested = z.object({ job: publicJobSchema }).parse(await queued.json()).job;
+  const original = await f.store.get('jobs', requested.id, jobSchema);
+  assert.ok(original);
+  await f.store.put('jobs', original.id, {
+    ...original,
+    createdAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+  });
+  const listing = await f.call(`/api/projects/${project.id}/work`, { bearer: agent });
+  assert.equal(
+    z
+      .object({ jobs: z.array(z.object({ attention: z.string().optional() })) })
+      .parse(await listing.json()).jobs[0]?.attention,
+    'unclaimed',
+  );
+  const claim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: agent,
+        body: {},
+      })
+    ).json(),
+  );
+  const partial = {
+    stage: 'implemented',
+    summary: 'Removed rejected overlay. Replacement still needed.',
+    remaining: ['Implement useful map detail.'],
+    runUrl: 't3-thread://v1/synthetic-run',
+    pullRequestUrl: 'https://github.com/example/site/pull/1',
+  };
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: agent,
+        body: { lease: claim.lease, delivery: partial },
+      })
+    ).status,
+    200,
+  );
+  const running = await f.store.get('jobs', claim.job.id, jobSchema);
+  assert.ok(running);
+  await f.store.put('jobs', running.id, { ...running, leaseExpiresAt: Date.now() - 1 });
+  await f.call(`/api/projects/${project.id}/work`, { bearer: agent });
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/resume`, {
+        method: 'POST',
+        bearer: other,
+        body: { inspection: 'Checked the prior PR before resuming.' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await f.call(`/api/work/${claim.job.id}/resume`, { method: 'POST', bearer: agent, body: {} }))
+      .status,
+    400,
+  );
+  const resumedResponse = await f.call(`/api/work/${claim.job.id}/resume`, {
+    method: 'POST',
+    bearer: agent,
+    body: {
+      inspection: 'Inspected the prior PR, retained its branch and remaining replacement work.',
+      runId: 'synthetic-recovery',
+    },
+  });
+  assert.equal(resumedResponse.status, 200);
+  const resumed = z
+    .object({
+      job: publicJobSchema.extend({
+        delivery: z.object({
+          details: z.object({ remaining: z.array(z.string()), pullRequestUrl: z.string() }),
+        }),
+      }),
+      lease: z.string(),
+    })
+    .parse(await resumedResponse.json());
+  assert.deepEqual(resumed.job.delivery.details.remaining, partial.remaining);
+  assert.equal(resumed.job.delivery.details.pullRequestUrl, partial.pullRequestUrl);
+  assert.notEqual(resumed.lease, claim.lease);
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/heartbeat`, {
+        method: 'POST',
+        bearer: agent,
+        body: { lease: claim.lease },
+      })
+    ).status,
+    403,
+  );
+  const races = await Promise.all([
+    f.call(`/api/work/${claim.job.id}/resume`, {
+      method: 'POST',
+      bearer: agent,
+      body: { inspection: 'Already inspected.' },
+    }),
+    f.call(`/api/projects/${project.id}/work/claim`, { method: 'POST', bearer: other, body: {} }),
+  ]);
+  assert.equal(races[0].status, 409);
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/complete`, {
+        method: 'POST',
+        bearer: agent,
+        body: {
+          lease: resumed.lease,
+          status: 'review',
+          body: 'The rejected overlay is removed. Replacement is still outstanding.',
+        },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/threads/${thread.id}`, {
+        method: 'PATCH',
+        cookie: owner.cookie,
+        body: { status: 'resolved' },
+      })
+    ).status,
+    409,
+  );
+  const evidence = {
+    ...partial,
+    stage: 'verified',
+    commit: 'a'.repeat(40),
+    reviewUrl: 'https://github.com/example/site/pull/1#review',
+    deploymentUrl: 'https://example.invalid/deploy/1',
+    verificationUrl: 'https://example.invalid/proof/1',
+  };
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: agent,
+        body: { delivery: evidence },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: other,
+        body: { delivery: { ...evidence, remaining: [] } },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: agent,
+        body: { delivery: { ...evidence, remaining: [] } },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/threads/${thread.id}`, {
+        method: 'PATCH',
+        cookie: owner.cookie,
+        body: { status: 'resolved' },
+      })
+    ).status,
+    200,
+  );
+});
+
+void test('selected queued claims and inspected resumes serialize across the whole project', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const a = await f.agent(owner.cookie, project.id);
+  const b = await f.agent(owner.cookie, project.id, 'Second runner');
+  async function queued(label: string) {
+    const thread = await f.thread(owner.cookie, project.id, label);
+    return z.object({ job: publicJobSchema }).parse(
+      await (
+        await f.call(`/api/threads/${thread.id}/work`, {
+          method: 'POST',
+          cookie: owner.cookie,
+          body: { revision: thread.revision, idempotencyKey: label },
+        })
+      ).json(),
+    ).job;
+  }
+  const first = await queued('First');
+  const second = await queued('Second');
+  const selected = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: a,
+        body: { requestId: second.id },
+      })
+    ).json(),
+  );
+  assert.equal(selected.job.id, second.id);
+  await f.call(`/api/work/${second.id}/complete`, {
+    method: 'POST',
+    bearer: a,
+    body: { lease: selected.lease, status: 'failed', body: 'Interrupted. Existing PR retained.' },
+  });
+  const raced = await Promise.all([
+    f.call(`/api/work/${second.id}/resume`, {
+      method: 'POST',
+      bearer: a,
+      body: { inspection: 'Inspected original source and PR; no duplicate work.' },
+    }),
+    f.call(`/api/projects/${project.id}/work/claim`, {
+      method: 'POST',
+      bearer: b,
+      body: { requestId: first.id },
+    }),
+  ]);
+  const running = await f.store.query('jobs', jobSchema, {
+    projectId: project.id,
+    status: 'running',
+  });
+  assert.equal(running.length, 1);
+  assert.ok(raced.every((response) => [200, 409].includes(response.status)));
+  const otherProject = await f.project(owner.cookie);
+  const foreign = await f.thread(owner.cookie, otherProject.id);
+  const foreignJob = z.object({ job: publicJobSchema }).parse(
+    await (
+      await f.call(`/api/threads/${foreign.id}/work`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { revision: foreign.revision, idempotencyKey: 'foreign' },
+      })
+    ).json(),
+  ).job;
+  const unrelated = await f.agent(owner.cookie, otherProject.id);
+  assert.equal(
+    (
+      await f.call(`/api/projects/${otherProject.id}/work/claim`, {
+        method: 'POST',
+        bearer: unrelated,
+        body: { requestId: first.id },
+      })
+    ).status,
+    403,
+  );
+  const foreignClaim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${otherProject.id}/work/claim`, {
+        method: 'POST',
+        bearer: unrelated,
+        body: { requestId: foreignJob.id },
+      })
+    ).json(),
+  );
+  await f.call(`/api/work/${foreignClaim.job.id}/cancel`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: {},
+  });
+  assert.equal(
+    (
+      await f.call(`/api/work/${foreignClaim.job.id}/resume`, {
+        method: 'POST',
+        bearer: unrelated,
+        body: { inspection: 'Inspected but the owner cancelled this request.' },
+      })
+    ).status,
+    409,
+  );
+});
+
+void test('unfinished requirements survive owner resubmission and evidence cannot close newer feedback', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id);
+  const agent = await f.agent(owner.cookie, project.id);
+  await f.call(`/api/threads/${thread.id}/work`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { revision: thread.revision, idempotencyKey: 'original' },
+  });
+  const claim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: agent,
+        body: {},
+      })
+    ).json(),
+  );
+  const delivery = {
+    stage: 'implemented',
+    summary: 'Rollback shipped, replacement remains.',
+    remaining: ['Replace rejected map detail.'],
+    pullRequestUrl: 'https://github.com/example/site/pull/1',
+  };
+  await f.call(`/api/work/${claim.job.id}/delivery`, {
+    method: 'PATCH',
+    bearer: agent,
+    body: { lease: claim.lease, delivery },
+  });
+  await f.call(`/api/work/${claim.job.id}/complete`, {
+    method: 'POST',
+    bearer: agent,
+    body: { lease: claim.lease, status: 'review', body: 'Partial implementation only.' },
+  });
+  const reply = z.object({ thread: threadSchema }).parse(
+    await (
+      await f.call(`/api/threads/${thread.id}/messages`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { body: 'Keep the map readable on mobile, too.' },
+      })
+    ).json(),
+  ).thread;
+  const verified = {
+    ...delivery,
+    stage: 'verified',
+    remaining: [],
+    commit: 'a'.repeat(40),
+    reviewUrl: 'https://example.invalid/review',
+    deploymentUrl: 'https://example.invalid/deploy',
+    verificationUrl: 'https://example.invalid/proof',
+  };
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: agent,
+        body: { delivery: verified },
+      })
+    ).status,
+    409,
+  );
+  const next = z.object({ job: publicJobSchema }).parse(
+    await (
+      await f.call(`/api/threads/${thread.id}/work`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { revision: reply.revision, idempotencyKey: 'followup' },
+      })
+    ).json(),
+  ).job;
+  assert.deepEqual(next.delivery?.details.remaining, delivery.remaining);
+  assert.equal(next.delivery.details.pullRequestUrl, delivery.pullRequestUrl);
+  assert.equal(next.delivery.details.stage, 'planning');
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/resume`, {
+        method: 'POST',
+        bearer: agent,
+        body: { inspection: 'An owner superseded this task with a new request.' },
+      })
+    ).status,
+    409,
+  );
+});
+
+void test('review R1 repeated recovery upserts one completion and retains its reactions', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id);
+  const agent = await f.agent(owner.cookie, project.id);
+  await f.call(`/api/threads/${thread.id}/work`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { revision: thread.revision, idempotencyKey: 'repeat-recovery' },
+  });
+  let claim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: agent,
+        body: {},
+      })
+    ).json(),
+  );
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const body = `Completion attempt ${attempt}`;
+    const result = await f.call(`/api/work/${claim.job.id}/complete`, {
+      method: 'POST',
+      bearer: agent,
+      body: { lease: claim.lease, status: attempt === 2 ? 'review' : 'failed', body },
+    });
+    assert.equal(result.status, 200);
+    const completed = z.object({ thread: threadSchema }).parse(await result.json()).thread;
+    assert.equal(
+      new Set(completed.messages.map((message) => message.id)).size,
+      completed.messages.length,
+    );
+    assert.equal(completed.messages.length, 2);
+    const message = completed.messages.find((message) => message.id === claim.job.id);
+    assert.ok(message);
+    assert.equal(message.body, body);
+    assert.equal(message.reactions.length, attempt);
+    assert.equal(completed.unsubmittedMessageCount, 0);
+    if (attempt < 2) {
+      assert.equal(
+        (
+          await f.call(`/api/threads/${thread.id}/reactions`, {
+            method: 'POST',
+            cookie: owner.cookie,
+            body: { messageId: message.id, emoji: attempt === 0 ? '👍' : '✅' },
+          })
+        ).status,
+        200,
+      );
+      claim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+        await (
+          await f.call(`/api/work/${claim.job.id}/resume`, {
+            method: 'POST',
+            bearer: agent,
+            body: {
+              inspection: `Inspected completion attempt ${attempt}, existing source and PR before resuming.`,
+            },
+          })
+        ).json(),
+      );
+    }
+  }
+});
+
+void test('review R2 personal owner can reconcile terminal agent delivery without overriding live leases', async (t) => {
+  const f = fixture();
+  t.after(async () => {
+    await f.ready;
+    f.store.close();
+  });
+  const owner = await f.account();
+  const member = await f.account('Member');
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id);
+  const agent = await f.agent(owner.cookie, project.id);
+  const other = await f.agent(owner.cookie, project.id, 'Other runner');
+  await f.call(`/api/projects/${project.id}/members`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { email: member.email, role: 'member' },
+  });
+  async function personal(cookie: string) {
+    const device = z
+      .object({ clientId: z.string(), device_code: z.string(), user_code: z.string() })
+      .parse(
+        await (
+          await f.call('/api/connections/start', {
+            method: 'POST',
+            body: { kind: 'personal', projectId: null, parentOrigin: null },
+          })
+        ).json(),
+      );
+    assert.equal(
+      (
+        await f.call('/api/connections/approve', {
+          method: 'POST',
+          cookie,
+          body: { code: device.user_code, accept: true },
+        })
+      ).status,
+      200,
+    );
+    const response = await f.call('/api/auth/oauth2/token', {
+      method: 'POST',
+      body: {
+        client_id: device.clientId,
+        device_code: device.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        resource: `${service}/api`,
+      },
+    });
+    assert.equal(response.status, 200);
+    return z.object({ access_token: z.string() }).parse(await response.json()).access_token;
+  }
+  const ownerToken = await personal(owner.cookie);
+  const memberToken = await personal(member.cookie);
+  await f.call(`/api/threads/${thread.id}/work`, {
+    method: 'POST',
+    cookie: owner.cookie,
+    body: { revision: thread.revision, idempotencyKey: 'owner-reconcile' },
+  });
+  const claim = z.object({ job: publicJobSchema, lease: z.string() }).parse(
+    await (
+      await f.call(`/api/projects/${project.id}/work/claim`, {
+        method: 'POST',
+        bearer: agent,
+        body: {},
+      })
+    ).json(),
+  );
+  const delivery = {
+    stage: 'implemented',
+    summary: 'Implementation references reconciled after source inspection.',
+    remaining: [],
+    pullRequestUrl: 'https://github.com/example/site/pull/1',
+  };
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: ownerToken,
+        body: { delivery },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        cookie: owner.cookie,
+        body: { delivery },
+      })
+    ).status,
+    403,
+  );
+  await f.call(`/api/work/${claim.job.id}/complete`, {
+    method: 'POST',
+    bearer: agent,
+    body: { lease: claim.lease, status: 'review', body: 'Implementation ready for review.' },
+  });
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: other,
+        body: { delivery },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: memberToken,
+        body: { delivery },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: ownerToken,
+        body: { delivery },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${claim.job.id}/delivery`, {
+        method: 'PATCH',
+        cookie: owner.cookie,
+        body: { delivery },
+      })
+    ).status,
+    200,
+  );
+});

@@ -5,6 +5,73 @@ import { test, expect } from './fixtures.js';
 
 test.use({ hasTouch: true });
 
+test('element selection leaves the mobile page exposed and restores the composer', async ({
+  page,
+  baseURL,
+}, testInfo) => {
+  if (!baseURL) throw new Error('Missing fixture origin');
+  const website = new URL(baseURL);
+  website.port = String(Number(website.port) + 1);
+  expect(
+    (
+      await page.request.post('/api/auth/sign-up/email', {
+        data: {
+          name: 'Mobile reviewer',
+          email: `${randomUUID()}@example.invalid`,
+          password: randomUUID(),
+        },
+      })
+    ).status(),
+  ).toBe(200);
+  const project = z.object({ project: projectSchema }).parse(
+    await (
+      await page.request.post('/api/projects', {
+        data: { name: 'Mobile selection', origins: [website.origin], theme: { mode: 'light' } },
+      })
+    ).json(),
+  ).project;
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`${website.origin}/?project=${project.id}`);
+  await expect
+    .poll(() => page.frames().some((frame) => frame.url().includes('/toolbar?')))
+    .toBe(true);
+  const frame = page.frames().find((frame) => frame.url().includes('/toolbar?'));
+  if (!frame) throw new Error('Toolbar missing');
+  await frame.getByRole('button', { name: 'Feedback', exact: false }).click();
+  await page.evaluate(() => {
+    const target = document.createElement('button');
+    target.id = 'mobile-selection-target';
+    target.textContent = 'Select this page element';
+    target.style.cssText = 'position:fixed;left:24px;bottom:180px;width:272px;height:48px';
+    document.body.append(target);
+  });
+  for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 640, height: 320 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+    const cancel = frame.getByRole('button', { name: 'Cancel selection', exact: true });
+    await expect(cancel).toBeVisible();
+    await expect.poll(() => frame.evaluate(() => innerHeight)).toBe(80);
+    expect((await cancel.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    if (viewport.width === 320) {
+      await page.screenshot({
+        path: `.data/review/mobile-selection-after-${testInfo.project.name}.png`,
+      });
+    }
+    await page.locator('#mobile-selection-target').tap({ timeout: 3000 });
+    await expect(frame.getByLabel('What would you like to change?')).toBeVisible();
+    await expect(frame.getByText('#mobile-selection-target', { exact: true })).toBeVisible();
+    await frame.getByRole('button', { name: 'Back to feedback', exact: true }).click();
+    await frame.getByRole('button', { name: 'New feedback', exact: true }).click();
+    await cancel.click();
+    await expect(frame.getByRole('button', { name: 'New feedback', exact: true })).toBeVisible();
+    await expect.poll(() => frame.evaluate(() => innerHeight)).toBe(viewport.height - 36);
+  }
+});
+
 test('sign-in and sign-up fit a small phone and remain reachable in a reduced viewport', async ({
   page,
 }) => {

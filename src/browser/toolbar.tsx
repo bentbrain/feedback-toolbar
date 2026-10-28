@@ -125,6 +125,7 @@ function Toolbar() {
   const [error, setError] = useState('');
   const [selectionUnavailable, setSelectionUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
+  const selecting = Boolean(auth && expanded && screen === 'selecting');
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<{
     id: string;
@@ -311,9 +312,9 @@ function Toolbar() {
     send({
       type: 'feedback:resize',
       width: expanded ? 382 : mini ? 56 : 280,
-      height: expanded ? 636 : 56,
+      height: selecting ? (error || selectionUnavailable ? 144 : 80) : expanded ? 636 : 56,
     });
-  }, [expanded, mini]);
+  }, [expanded, mini, selecting, error, selectionUnavailable]);
   useEffect(() => {
     if (!auth) return;
     const fail = (failure: unknown) => {
@@ -668,7 +669,30 @@ function Toolbar() {
   return (
     <TooltipProvider>
       <Toaster position="top-center" theme={appliedTheme.mode} />
-      {!expanded ? (
+      {selecting ? (
+        <section
+          aria-label="Element selection"
+          className="m-1 flex h-[calc(100dvh-8px)] flex-col overflow-auto rounded-lg border bg-card shadow-sm"
+        >
+          <div className="flex shrink-0 items-center gap-1 px-2 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-medium">Select an element</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Tap or click the page</p>
+            </div>
+            <Button variant="ghost" size="sm" aria-label="Cancel selection" onClick={back}>
+              Cancel
+            </Button>
+            <IconAction label="Minimize toolbar" onClick={collapse}>
+              <X className="size-4" />
+            </IconAction>
+          </div>
+          {displayedError ? (
+            <p role="alert" className="px-3 pb-3 text-[11px] leading-4 text-destructive">
+              {displayedError}
+            </p>
+          ) : null}
+        </section>
+      ) : !expanded ? (
         <div
           className={`m-1 flex h-12 items-center justify-between rounded-lg border bg-card shadow-sm ${mini ? 'justify-center' : 'px-2'}`}
         >
@@ -761,18 +785,6 @@ function Toolbar() {
                     Approval code: {pending.code}. Confirm this code in the sign-in window.
                   </p>
                 ) : null}
-              </Empty>
-            </div>
-          ) : screen === 'selecting' ? (
-            <div className="flex-1">
-              <Empty
-                title="Select an element"
-                description="Click an element on the page. Press Escape to cancel."
-                symbol={<Target className="size-5" />}
-              >
-                <Button variant="outline" size="sm" onClick={back}>
-                  Cancel selection
-                </Button>
               </Empty>
             </div>
           ) : screen === 'compose' && context ? (

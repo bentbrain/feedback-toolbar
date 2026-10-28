@@ -140,6 +140,12 @@ test('interrupted work keeps remaining requirements and release evidence visible
     timeout: 15_000,
   });
   await expect(
+    dialog.getByText('Runner stopped. Existing work retained.', { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByText('Replacement implemented and reviewed.', { exact: true }),
+  ).toHaveCount(1);
+  await expect(
     dialog.getByText('Implement better geographic context.', { exact: true }),
   ).toHaveCount(0);
   await expect(dialog.getByRole('link', { name: 'Deployment', exact: true })).toHaveAttribute(

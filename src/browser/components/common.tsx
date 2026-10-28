@@ -450,7 +450,9 @@ export function Conversation({
             <DeliveryDetails job={job} />
             {job.status === 'review' &&
             job.result &&
-            !thread.messages.some((message) => message.id === job.id) ? (
+            !thread.messages.some(
+              (message) => message.id === job.id && message.body === job.result,
+            ) ? (
               <p data-feedback-content className="whitespace-pre-wrap text-xs leading-6">
                 {job.result}
               </p>

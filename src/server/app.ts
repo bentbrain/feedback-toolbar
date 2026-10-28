@@ -1300,13 +1300,19 @@ export function createApp(options: Options) {
     const principal = c.get('principal');
     const before = requireValue(await store.get('jobs', c.req.param('id'), jobSchema));
     const project = await access(principal, before.projectId, true);
-    if (['agent', 'personal'].includes(principal.kind)) {
+    if (before.status === 'running') {
+      await checkLease(before.id, principal, input.lease ?? '');
+    } else if (
+      principal.kind === 'agent' ||
+      (principal.kind === 'personal' && before.claimedBy === principal.id)
+    ) {
       if (before.claimedBy !== principal.id)
         throw new HttpError(403, 'Delivery belongs to another runner.');
-      if (before.status === 'running') await checkLease(before.id, principal, input.lease ?? '');
-      else if (!['review', 'failed'].includes(before.status))
+      if (!['review', 'failed'].includes(before.status))
         throw new HttpError(409, 'This request cannot report delivery.');
-    } else await access(principal, before.projectId, true, true);
+    } else {
+      await access(principal, before.projectId, true, true);
+    }
     const thread = requireValue(await store.get('threads', before.threadId, threadSchema));
     if (input.delivery.stage === 'verified') {
       const latest = (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0];
@@ -1374,11 +1380,12 @@ export function createApp(options: Options) {
         kind: principal.kind === 'agent' ? 'agent' : 'human',
         body: input.body,
         createdAt: at,
-        reactions: [],
+        reactions:
+          threadBefore.messages.find((existing) => existing.id === job.id)?.reactions ?? [],
       };
       const candidate = threadSchema.parse({
         ...threadBefore,
-        messages: [...threadBefore.messages, message],
+        messages: [...threadBefore.messages.filter((existing) => existing.id !== job.id), message],
         revision: threadBefore.revision + 1,
         updatedAt: at,
       });

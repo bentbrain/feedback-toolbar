@@ -229,18 +229,93 @@ export function IconAction({
   );
 }
 export function JobBadge({ job }: { job: Work }) {
+  const delivery = job.delivery?.details;
+  const label =
+    delivery?.stage === 'verified'
+      ? 'Verified in production'
+      : job.attention === 'unclaimed'
+        ? 'Waiting for runner'
+        : job.attention === 'remaining'
+          ? 'Work remaining'
+          : job.status === 'failed'
+            ? 'Run interrupted'
+            : job.status === 'review'
+              ? 'Ready for review'
+              : job.status;
   return (
     <Badge
       variant="secondary"
       className={cn(
         'border-0 text-[10px]',
-        ['queued', 'running'].includes(job.status) && 'bg-orange-50 text-orange-700',
-        job.status === 'review' && 'bg-indigo-50 text-indigo-600',
-        job.status === 'failed' && 'bg-red-50 text-red-600',
+        delivery?.stage === 'verified'
+          ? 'bg-green-50 text-green-800'
+          : job.attention
+            ? 'bg-orange-50 text-orange-700'
+            : job.status === 'review'
+              ? 'bg-indigo-50 text-indigo-600'
+              : '',
       )}
     >
-      {job.status === 'review' ? 'Ready for review' : job.status}
+      {label}
     </Badge>
+  );
+}
+function DeliveryDetails({ job }: { job: Work }) {
+  const delivery = job.delivery?.details;
+  if (!delivery)
+    return job.status === 'review' ? (
+      <p className="text-[11px] text-muted-foreground">
+        Production delivery has not been recorded.
+      </p>
+    ) : null;
+  const links = [
+    { label: 'Run', url: delivery.runUrl },
+    { label: 'Pull request', url: delivery.pullRequestUrl },
+    { label: 'Review', url: delivery.reviewUrl },
+    { label: 'Deployment', url: delivery.deploymentUrl },
+    { label: 'Verification', url: delivery.verificationUrl },
+  ];
+  return (
+    <section
+      aria-label="Delivery"
+      className="space-y-2 rounded-none border p-3 text-[11px] leading-5"
+    >
+      <p>
+        {delivery.stage === 'verified' ? 'Verified in production' : `Delivery: ${delivery.stage}`}
+      </p>
+      <p data-feedback-content>{delivery.summary}</p>
+      {delivery.remaining.length ? (
+        <div role="status">
+          <p>{job.status === 'cancelled' ? 'Cancelled requirements' : 'Remaining work'}</p>
+          <ul className="list-disc space-y-1 pl-4">
+            {delivery.remaining.map((item, index) => (
+              <li data-feedback-content key={index}>
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {links.map((link) =>
+          link.url ? (
+            <a
+              key={link.label}
+              className="text-primary underline underline-offset-2"
+              href={link.url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {link.label}
+            </a>
+          ) : null,
+        )}
+      </div>
+      {delivery.commit ? <p className="break-all font-mono">Commit {delivery.commit}</p> : null}
+      {job.recovery ? (
+        <p data-feedback-content>Resumed after inspection: {job.recovery.inspection}</p>
+      ) : null}
+    </section>
   );
 }
 export function UnsubmittedFeedback({ thread, job }: { thread: Thread; job?: Work | undefined }) {
@@ -372,6 +447,7 @@ export function Conversation({
         {job ? (
           <div className="space-y-2">
             <JobBadge job={job} />
+            <DeliveryDetails job={job} />
             {job.status === 'review' &&
             job.result &&
             !thread.messages.some((message) => message.id === job.id) ? (
@@ -380,19 +456,23 @@ export function Conversation({
               </p>
             ) : null}
             <p className="text-[11px] leading-5 text-muted-foreground">
-              {job.status === 'queued'
-                ? 'Queued. Waiting for the agent.'
-                : job.status === 'running'
-                  ? (job.leaseExpiresAt ?? 0) < Date.now()
-                    ? 'The runner lost connection. Check its local run record before cancelling or requesting a retry.'
-                    : 'Agent running.'
-                  : job.status === 'review'
-                    ? unsubmitted
-                      ? 'The submitted request is ready for review. Newer feedback has not been sent.'
-                      : 'Review the proposed change before resolving this thread.'
-                    : job.status === 'failed' && job.result
-                      ? job.result
-                      : `Work ${job.status}.`}
+              {job.delivery?.details.stage === 'verified'
+                ? 'Production verification is recorded for this request.'
+                : job.status === 'queued'
+                  ? job.attention === 'unclaimed'
+                    ? 'This request has waited more than 10 minutes. No runner has claimed it.'
+                    : 'Queued. Waiting for the agent.'
+                  : job.status === 'running'
+                    ? (job.leaseExpiresAt ?? 0) < Date.now()
+                      ? 'The runner lost connection. Check its local run record before cancelling or requesting a retry.'
+                      : 'Agent running.'
+                    : job.status === 'review'
+                      ? unsubmitted
+                        ? 'The submitted request is ready for review. Newer feedback has not been sent.'
+                        : 'Review the proposed change before resolving this thread.'
+                      : job.status === 'failed' && job.result
+                        ? job.result
+                        : `Work ${job.status}.`}
             </p>
           </div>
         ) : null}
@@ -471,7 +551,11 @@ export function Conversation({
                     ? 'Resolve'
                     : 'Reopen'}
               </Button>
-              {role === 'owner' && onCancel && job && ['queued', 'running'].includes(job.status) ? (
+              {role === 'owner' &&
+              onCancel &&
+              job &&
+              (['queued', 'running'].includes(job.status) ||
+                Boolean(job.delivery?.details.remaining.length)) ? (
                 <Button
                   type="button"
                   variant="ghost"

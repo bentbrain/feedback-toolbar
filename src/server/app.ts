@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import {
   credentialSchema,
+  deliveryInputSchema,
   defaultTheme,
   emojiSchema,
   installation,
@@ -250,7 +251,19 @@ export function createApp(options: Options) {
   };
   const publicThread = async (thread: Thread) =>
     (await store.withFeedbackState([thread]))[0] ?? thread;
-  const publicJob = (job: z.infer<typeof jobSchema>) => publicJobSchema.parse(job);
+  const publicJob = (job: z.infer<typeof jobSchema>) => {
+    const attention =
+      job.status === 'queued' && Date.now() - Date.parse(job.createdAt) >= 10 * 60_000
+        ? 'unclaimed'
+        : job.status === 'failed'
+          ? 'interrupted'
+          : job.status !== 'cancelled' && job.delivery?.details.remaining.length
+            ? 'remaining'
+            : job.status === 'review' && job.delivery?.details.stage !== 'verified'
+              ? 'unverified'
+              : undefined;
+    return publicJobSchema.parse({ ...job, ...(attention ? { attention } : {}) });
+  };
   const addMessage = async (thread: Thread, principal: Credential, user: User, body: string) => {
     const at = now();
     const message = {
@@ -1012,17 +1025,41 @@ export function createApp(options: Options) {
   app.patch('/api/threads/:id', async (c) => {
     requireHuman(c.get('principal'));
     const thread = requireValue(await store.get('threads', c.req.param('id'), threadSchema));
-    await access(c.get('principal'), thread.projectId, true);
+    const project = await access(c.get('principal'), thread.projectId, true);
     const input = z
       .object({ status: z.enum(['open', 'resolved']) })
       .strict()
       .parse(await c.req.json());
-    const updated = await store.mutate('threads', thread.id, threadSchema, (current) => ({
-      ...current,
+    const latest = (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0];
+    if (
+      input.status === 'resolved' &&
+      latest?.delivery?.details.remaining.length &&
+      latest.status !== 'cancelled'
+    )
+      throw new HttpError(409, 'Remaining work must be completed or cancelled before resolving.');
+    const updated = {
+      ...thread,
       status: input.status,
       updatedAt: now(),
-      revision: current.revision + 1,
-    }));
+      revision: thread.revision + 1,
+    };
+    const guards = [{ kind: 'threads', id: thread.id, before: thread, after: updated }];
+    if (
+      !(await store.atomicCompare(
+        [
+          {
+            kind: 'projects',
+            id: project.id,
+            before: project,
+            after: { ...project, workVersion: (project.workVersion ?? 0) + 1 },
+          },
+          ...guards,
+          ...(latest ? [{ kind: 'jobs', id: latest.id, before: latest, after: latest }] : []),
+        ],
+        [],
+      ))
+    )
+      throw new HttpError(409, 'Feedback changed. Refresh before resolving.');
     await store.audit(thread.projectId, c.get('user').id, 'thread.updated', thread.id);
     return c.json({ thread: await publicThread(updated) });
   });
@@ -1030,7 +1067,7 @@ export function createApp(options: Options) {
     const principal = c.get('principal');
     requireHuman(principal);
     const thread = requireValue(await store.get('threads', c.req.param('id'), threadSchema));
-    await access(principal, thread.projectId, true, true);
+    const project = await access(principal, thread.projectId, true, true);
     const input = z
       .object({ revision: z.number().int(), idempotencyKey: z.string().min(1).max(150) })
       .strict()
@@ -1055,6 +1092,7 @@ export function createApp(options: Options) {
     }
     if (thread.revision !== input.revision)
       throw new HttpError(409, 'Feedback changed. Refresh it before sending.');
+    const prior = (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0];
     const job = jobSchema.parse({
       id: randomUUID(),
       projectId: thread.projectId,
@@ -1071,14 +1109,40 @@ export function createApp(options: Options) {
       runId: null,
       result: null,
       idempotencyKey: input.idempotencyKey,
+      ...(prior?.delivery?.details.remaining.length && prior.status !== 'cancelled'
+        ? {
+            delivery: {
+              details: {
+                stage: 'planning',
+                summary: 'Continuing unfinished work from the previous request.',
+                remaining: prior.delivery.details.remaining,
+                ...(prior.delivery.details.runUrl ? { runUrl: prior.delivery.details.runUrl } : {}),
+                ...(prior.delivery.details.pullRequestUrl
+                  ? { pullRequestUrl: prior.delivery.details.pullRequestUrl }
+                  : {}),
+              },
+              reportedAt: now(),
+            },
+          }
+        : {}),
     });
     try {
-      const inserted = await store.database.execute({
-        sql: "INSERT INTO documents(kind,id,data) SELECT 'jobs',?,? WHERE EXISTS(SELECT 1 FROM documents WHERE kind='threads' AND id=? AND data=?)",
-        params: [job.id, JSON.stringify(job), thread.id, JSON.stringify(thread)],
-      });
-      if (inserted.changes !== 1)
-        throw new HttpError(409, 'Feedback changed. Refresh it before sending.');
+      const inserted = await store.atomicCompare(
+        [
+          {
+            kind: 'projects',
+            id: project.id,
+            before: project,
+            after: { ...project, workVersion: (project.workVersion ?? 0) + 1 },
+          },
+          { kind: 'threads', id: thread.id, before: thread, after: thread },
+        ],
+        [
+          store.write('jobs', job.id, job, true),
+          store.auditStatement(thread.projectId, principal.userId, 'work.requested', job.id),
+        ],
+      );
+      if (!inserted) throw new Error('Feedback changed while submitting work.');
     } catch (failure) {
       if (failure instanceof HttpError) throw failure;
       const saved = (
@@ -1093,7 +1157,6 @@ export function createApp(options: Options) {
         return c.json({ job: publicJob(saved), thread: await publicThread(thread) }, 201);
       throw new HttpError(409, 'This thread already has work in progress.');
     }
-    await store.audit(thread.projectId, principal.userId, 'work.requested', job.id);
     return c.json({ job: publicJob(job), thread: await publicThread(thread) }, 201);
   });
   app.get('/api/projects/:id/work', async (c) => {
@@ -1102,11 +1165,16 @@ export function createApp(options: Options) {
     return c.json({ jobs });
   });
   app.post('/api/projects/:id/work/claim', async (c) => {
+    const input = z
+      .object({ requestId: z.string().optional() })
+      .strict()
+      .parse(await c.req.json());
     const principal = c.get('principal');
     await access(principal, c.req.param('id'), true);
     if (!['agent', 'personal'].includes(principal.kind))
       throw new HttpError(403, 'Use a local connector or agent credential to claim work.');
     await projectJobs(c.req.param('id'));
+    const project = requireValue(await store.get('projects', c.req.param('id'), projectSchema));
     const running = await store.query(
       'jobs',
       jobSchema,
@@ -1114,9 +1182,19 @@ export function createApp(options: Options) {
       1,
     );
     if (running.length) return c.json({ job: null });
-    const job = (
-      await store.query('jobs', jobSchema, { projectId: c.req.param('id'), status: 'queued' }, 1)
-    )[0];
+    const job = input.requestId
+      ? await store.get('jobs', input.requestId, jobSchema)
+      : (
+          await store.query(
+            'jobs',
+            jobSchema,
+            { projectId: c.req.param('id'), status: 'queued' },
+            1,
+          )
+        )[0];
+    if (job && job.projectId !== project.id)
+      throw new HttpError(403, 'Request belongs to another project.');
+    if (job && job.status !== 'queued') return c.json({ job: null });
     if (!job) return c.json({ job: null });
     const lease = token();
     const claimed = jobSchema.parse({
@@ -1128,7 +1206,21 @@ export function createApp(options: Options) {
       updatedAt: now(),
     });
     try {
-      if (!(await store.compare('jobs', job.id, job, claimed))) return c.json({ job: null });
+      if (
+        !(await store.atomicCompare(
+          [
+            {
+              kind: 'projects',
+              id: project.id,
+              before: project,
+              after: { ...project, workVersion: (project.workVersion ?? 0) + 1 },
+            },
+            { kind: 'jobs', id: job.id, before: job, after: claimed },
+          ],
+          [],
+        ))
+      )
+        return c.json({ job: null });
     } catch {
       return c.json({ job: null });
     }
@@ -1147,6 +1239,105 @@ export function createApp(options: Options) {
       throw new HttpError(403, 'Work lease belongs to another runner.');
     return job;
   };
+  app.post('/api/work/:id/resume', async (c) => {
+    const input = z
+      .object({
+        inspection: z.string().trim().min(10).max(2000),
+        runId: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .parse(await c.req.json());
+    const principal = c.get('principal');
+    const previous = requireValue(await store.get('jobs', c.req.param('id'), jobSchema));
+    await access(principal, previous.projectId, true);
+    if (!['agent', 'personal'].includes(principal.kind) || previous.claimedBy !== principal.id)
+      throw new HttpError(403, 'Only the original runner can resume this request.');
+    await projectJobs(previous.projectId);
+    const project = requireValue(await store.get('projects', previous.projectId, projectSchema));
+    const before = requireValue(await store.get('jobs', previous.id, jobSchema));
+    const thread = requireValue(await store.get('threads', before.threadId, threadSchema));
+    const latest = (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0];
+    if (before.status !== 'failed' || thread.status !== 'open' || latest?.id !== before.id)
+      throw new HttpError(409, 'This request cannot be resumed. Inspect its current state.');
+    if (
+      (await store.query('jobs', jobSchema, { projectId: project.id, status: 'running' }, 1)).length
+    )
+      throw new HttpError(409, 'Another request is running for this project.');
+    const lease = token();
+    const at = now();
+    const job = jobSchema.parse({
+      ...before,
+      status: 'running',
+      leaseHash: digest(lease),
+      leaseExpiresAt: Date.now() + 5 * 60_000,
+      updatedAt: at,
+      runId: input.runId ?? before.runId,
+      recovery: { inspection: input.inspection, resumedAt: at, previousRunId: before.runId },
+    });
+    if (
+      !(await store.atomicCompare(
+        [
+          {
+            kind: 'projects',
+            id: project.id,
+            before: project,
+            after: { ...project, workVersion: (project.workVersion ?? 0) + 1 },
+          },
+          { kind: 'threads', id: thread.id, before: thread, after: thread },
+          { kind: 'jobs', id: job.id, before, after: job },
+        ],
+        [store.auditStatement(project.id, principal.id, 'work.resumed', job.id)],
+      ))
+    )
+      throw new HttpError(409, 'Work changed. Inspect before resuming.');
+    return c.json({ job: { ...publicJob(job), snapshot: job.snapshot }, lease });
+  });
+  app.patch('/api/work/:id/delivery', async (c) => {
+    const input = z
+      .object({ lease: z.string().min(20).optional(), delivery: deliveryInputSchema })
+      .strict()
+      .parse(await c.req.json());
+    const principal = c.get('principal');
+    const before = requireValue(await store.get('jobs', c.req.param('id'), jobSchema));
+    const project = await access(principal, before.projectId, true);
+    if (['agent', 'personal'].includes(principal.kind)) {
+      if (before.claimedBy !== principal.id)
+        throw new HttpError(403, 'Delivery belongs to another runner.');
+      if (before.status === 'running') await checkLease(before.id, principal, input.lease ?? '');
+      else if (!['review', 'failed'].includes(before.status))
+        throw new HttpError(409, 'This request cannot report delivery.');
+    } else await access(principal, before.projectId, true, true);
+    const thread = requireValue(await store.get('threads', before.threadId, threadSchema));
+    if (input.delivery.stage === 'verified') {
+      const latest = (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0];
+      if (latest?.id !== before.id || (await publicThread(thread)).unsubmittedMessageCount)
+        throw new HttpError(409, 'Newer feedback remains. Verify the current request first.');
+    }
+    const at = now();
+    const job = jobSchema.parse({
+      ...before,
+      delivery: { details: input.delivery, reportedAt: at },
+      updatedAt: at,
+    });
+    const updated = { ...thread, updatedAt: at, revision: thread.revision + 1 };
+    if (
+      !(await store.atomicCompare(
+        [
+          {
+            kind: 'projects',
+            id: project.id,
+            before: project,
+            after: { ...project, workVersion: (project.workVersion ?? 0) + 1 },
+          },
+          { kind: 'jobs', id: job.id, before, after: job },
+          { kind: 'threads', id: thread.id, before: thread, after: updated },
+        ],
+        [store.auditStatement(job.projectId, principal.id, 'work.delivery-recorded', job.id)],
+      ))
+    )
+      throw new HttpError(409, 'Feedback changed. Refresh before reporting delivery.');
+    return c.json({ job: publicJob(job), thread: await publicThread(updated) });
+  });
   app.post('/api/work/:id/heartbeat', async (c) => {
     const input = leaseInput.parse(await c.req.json());
     const before = await checkLease(c.req.param('id'), c.get('principal'), input.lease);
@@ -1209,7 +1400,7 @@ export function createApp(options: Options) {
   app.post('/api/work/:id/cancel', async (c) => {
     const job = requireValue(await store.get('jobs', c.req.param('id'), jobSchema));
     await access(c.get('principal'), job.projectId, true, true);
-    if (!['queued', 'running'].includes(job.status))
+    if (!['queued', 'running'].includes(job.status) && !job.delivery?.details.remaining.length)
       throw new HttpError(409, 'This work is already finished.');
     const cancelled = jobSchema.parse({
       ...job,

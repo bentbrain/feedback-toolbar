@@ -170,6 +170,21 @@ void test(
       ).error,
       false,
     );
+    assert.equal(
+      (
+        await tool('record_delivery', {
+          requestId: claimed.job.id,
+          lease: claimed.lease,
+          delivery: {
+            stage: 'implemented',
+            summary: 'Spacing fixed; later owner feedback remains outside this request.',
+            remaining: [],
+            pullRequestUrl: 'https://github.com/example/site/pull/1',
+          },
+        })
+      ).error,
+      false,
+    );
     const complete = await tool('complete_work', {
       requestId: claimed.job.id,
       lease: claimed.lease,
@@ -200,6 +215,28 @@ void test(
     const next = z
       .object({ job: publicJobSchema, lease: z.string() })
       .parse(JSON.parse((await tool('claim_work')).text));
+    assert.equal(
+      (
+        await tool('complete_work', {
+          requestId: next.job.id,
+          lease: next.lease,
+          status: 'failed',
+          body: 'Stopped with existing source work retained.',
+        })
+      ).error,
+      false,
+    );
+    const resumed = await tool('resume_work', {
+      requestId: next.job.id,
+      inspection: 'Inspected the original branch and existing PR before continuing.',
+      runId: 'scheduled:recovery',
+    });
+    assert.equal(resumed.error, false);
+    const recovery = z
+      .object({ job: publicJobSchema, lease: z.string() })
+      .parse(JSON.parse(resumed.text));
+    assert.equal(recovery.job.id, next.job.id);
+    assert.notEqual(recovery.lease, next.lease);
     await call(`/api/work/${next.job.id}/cancel`, {});
     assert.equal(
       (await tool('heartbeat_work', { requestId: next.job.id, lease: next.lease })).error,

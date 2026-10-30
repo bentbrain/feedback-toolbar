@@ -302,8 +302,11 @@ export function mountFeedback(options: FeedbackOptions): { destroy(): void } {
       if (
         (data.mode === 'light' || data.mode === 'dark') &&
         (data.radius === 'square' || data.radius === 'soft' || data.radius === 'round')
-      )
+      ) {
+        // A scheme mismatch makes browsers paint an opaque canvas behind the toolbar.
+        frame.style.colorScheme = data.mode;
         pins.theme(data.accent, data.mode, data.radius);
+      }
       if (data.placement === 'bottom-left' || data.placement === 'bottom-right') {
         placement = data.placement;
         resize(size.width, size.height);

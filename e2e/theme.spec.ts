@@ -11,7 +11,7 @@ const website = new URL(serviceOrigin);
 website.port = String(Number(website.port) + 1);
 
 type Mode = Theme['mode'];
-async function projectFixture(page: Page, mode: Mode = 'system') {
+async function projectFixture(page: Page, mode: Mode = 'system', appearance: Partial<Theme> = {}) {
   const signup = await page.request.post('/api/auth/sign-up/email', {
     data: {
       name: 'Theme review',
@@ -21,7 +21,11 @@ async function projectFixture(page: Page, mode: Mode = 'system') {
   });
   expect(signup.status()).toBe(200);
   const created = await page.request.post('/api/projects', {
-    data: { name: 'System theme fixture', origins: [website.origin], theme: { mode } },
+    data: {
+      name: 'System theme fixture',
+      origins: [website.origin],
+      theme: { ...appearance, mode },
+    },
   });
   return z.object({ project: projectSchema }).parse(await created.json()).project;
 }
@@ -80,7 +84,12 @@ async function constrainFrameToLight(frame: Frame) {
   const element = await frame.frameElement();
   await element.evaluate((element) => {
     if (!(element instanceof HTMLIFrameElement)) throw new Error('Toolbar iframe missing');
-    element.style.colorScheme = 'light';
+    const root = element.getRootNode();
+    if (!(root instanceof ShadowRoot)) throw new Error('Toolbar shadow root missing');
+    const style = document.createElement('style');
+    // Hold the native mismatch even when the loader synchronizes its inline scheme.
+    style.textContent = 'iframe { color-scheme: light !important; }';
+    root.append(style);
   });
   if (!(await element.isVisible())) return;
   await frame.evaluate(
@@ -284,3 +293,60 @@ test('metadata errors stay visible after trusted parent theme configuration', as
   await expect(frame.getByRole('alert')).toHaveText('Theme metadata is temporarily unavailable.');
   await expect(frame.locator('html')).toHaveAttribute('data-mode', 'dark');
 });
+
+for (const saved of ['system', 'light', 'dark'] satisfies Mode[]) {
+  test(`toolbar canvas stays transparent with saved ${saved} mode`, async ({ page }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-native-dark')
+      await page.emulateMedia({ colorScheme: 'dark' });
+    const project = await projectFixture(page, saved, { accent: '#292f29', radius: 'soft' });
+    const frame = await openToolbar(page, project.id);
+    await page.evaluate(() => {
+      const backdrop = document.createElement('div');
+      backdrop.style.cssText = 'position:fixed;inset:0;background:#123456;z-index:2147483646';
+      document.body.append(backdrop);
+    });
+    for (const [index, system] of ['dark', 'light', 'dark'].entries()) {
+      if (index > 0) await page.emulateMedia({ colorScheme: system === 'dark' ? 'dark' : 'light' });
+      const mode = saved === 'system' ? system : saved;
+      await expectMode(frame, mode === 'dark' ? 'dark' : 'light');
+      await expect(frame.locator('html')).toHaveCSS('color-scheme', mode);
+      await expect
+        .poll(async () =>
+          (await frame.frameElement()).evaluate((element) => {
+            if (!(element instanceof HTMLIFrameElement)) throw new Error('Toolbar iframe missing');
+            return getComputedStyle(element).colorScheme;
+          }),
+        )
+        .toBe(mode);
+      const screenshot = await page.locator('[data-feedback-host]').screenshot({
+        scale: 'css',
+        path: testInfo.outputPath(`canvas-${system}-${index}.png`),
+      });
+      await testInfo.attach(`canvas-${system}-${index}`, {
+        body: screenshot,
+        contentType: 'image/png',
+      });
+      const pixels = await page.evaluate(async (base64) => {
+        const image = new Image();
+        image.src = `data:image/png;base64,${base64}`;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Missing screenshot pixel context');
+        context.drawImage(image, 0, 0);
+        return [
+          [1, 1],
+          [image.width - 2, image.height - 2],
+          [4, 4],
+        ].map(([x = 0, y = 0]) => Array.from(context.getImageData(x, y, 1, 1).data));
+      }, screenshot.toString('base64'));
+      expect(pixels).toEqual([
+        [18, 52, 86, 255],
+        [18, 52, 86, 255],
+        [18, 52, 86, 255],
+      ]);
+    }
+  });
+}

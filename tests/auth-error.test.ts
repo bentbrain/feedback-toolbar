@@ -5,7 +5,9 @@ import { Store } from '../src/server/store.js';
 
 void test('failed session lookups omit internal error causes from HTTP responses', async (t) => {
   const store = new Store(':memory:');
-  t.after(() => store.close());
+  t.after(() => {
+    store.close();
+  });
   const url = 'http://localhost:4310';
   const auth = createAuthentication({
     database: store.authDatabase,
@@ -28,12 +30,13 @@ void test('failed session lookups omit internal error causes from HTTP responses
   const cookie = signup.headers.get('set-cookie')?.split(';')[0];
   assert.ok(cookie);
   const context = await auth.$context;
-  context.internalAdapter.findSession = async () => {
-    throw Object.assign(new Error('Synthetic session lookup failure'), {
-      query: 'SELECT synthetic_private_session',
-      params: ['synthetic-private-parameter'],
-    });
-  };
+  context.internalAdapter.findSession = () =>
+    Promise.reject(
+      Object.assign(new Error('Synthetic session lookup failure'), {
+        query: 'SELECT synthetic_private_session',
+        params: ['synthetic-private-parameter'],
+      }),
+    );
   const response = await auth.handler(
     new Request(`${url}/api/auth/get-session`, { headers: { Cookie: cookie } }),
   );

@@ -1,0 +1,12 @@
+{
+  "name": "bent-mono-sealed-secret-transfer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "libsodium-wrappers": "0.8.4",
+    "zod": "4.6.7"
+  },
+  "overrides": {
+    "libsodium": "0.8.4"
+  }
+}

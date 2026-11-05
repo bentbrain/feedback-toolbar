@@ -45,7 +45,14 @@ jobs:
         with:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile
+      - name: Install pinned transfer verification dependencies
+        working-directory: .github/secret-transfer
+        run: bun install --ignore-scripts --frozen-lockfile
       - run: ${{ matrix.command }}
+      - name: Audit transfer dependencies
+        if: matrix.name == 'Dependency audit'
+        working-directory: .github/secret-transfer
+        run: bun audit --audit-level=high
 
   browser:
     name: Browser tests
@@ -171,7 +178,8 @@ jobs:
     name: Deploy production
     if: >-
       !cancelled() && needs.gate.result == 'success' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      vars.LEGACY_DEPLOYMENT_ENABLED == 'true'
     needs: gate
     permissions:
       contents: write

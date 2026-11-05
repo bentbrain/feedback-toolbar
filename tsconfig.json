@@ -29,6 +29,7 @@
     "eslint.config.js",
     "vite.config.ts",
     "react-router.config.ts",
-    ".react-router/types/**/*"
+    ".react-router/types/**/*",
+    ".github/secret-transfer/**/*.ts"
   ]
 }

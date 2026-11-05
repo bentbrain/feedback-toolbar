@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "transferId": "bent-mono-20261105-sealed-transfer-01",
+  "target": {
+    "repository": "bentbrain/bent-mono",
+    "repositoryId": 1446488716,
+    "ownerId": 28818884
+  },
+  "workflowPath": ".github/workflows/sealed-secret-transfer.yml",
+  "ownerId": 28818884,
+  "groups": {
+    "toolbar": {
+      "sourceRepository": "bentbrain/feedback-toolbar",
+      "sourceRepositoryId": 1418167129,
+      "sourceEnvironment": "production",
+      "targets": [
+        {
+          "environment": "jp-production",
+          "keyId": "3380204578043523366",
+          "publicKey": "v81/nI0DG0KpYH0lP4xqX7uKe+6x/uk3nEMRDL6sCls=",
+          "names": ["CLOUDFLARE_API_TOKEN"]
+        },
+        {
+          "environment": "toolbar-production",
+          "keyId": "3380204578043523366",
+          "publicKey": "zSR8lCo7uN8hxPNw1aFRLur+vbp78m1JYUuyuMyt5SQ=",
+          "names": [
+            "AUTH_GITHUB_CLIENT_SECRET",
+            "BETTER_AUTH_SECRET",
+            "CLOUDFLARE_API_TOKEN",
+            "FEEDBACK_PROXY_SECRET",
+            "VERCEL_TOKEN"
+          ]
+        }
+      ]
+    }
+  }
+}

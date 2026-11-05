@@ -1,0 +1,23 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "bent-mono-sealed-secret-transfer",
+      "dependencies": {
+        "libsodium-wrappers": "0.8.4",
+        "zod": "4.6.7",
+      },
+    },
+  },
+  "overrides": {
+    "libsodium": "0.8.4",
+  },
+  "packages": {
+    "libsodium": ["libsodium@0.8.4", "", {}, "sha512-lMcYaRi0zcs7tarATsQUYC7rstliIXZuoq0c6zXSgNtSNtdvBgkSegjWhpMJAXzKX3SUSwIp7+zEsob+j3LuRw=="],
+
+    "libsodium-wrappers": ["libsodium-wrappers@0.8.4", "", { "dependencies": { "libsodium": "^0.8.0" } }, "sha512-mu8aAWucZjTB5O/BtGXtW4e1agy7uHxNYG7zPthmmD1jU43LCDmSWZLN4JhflbdPXj3yDO4lxM1O9hLDgIOXDw=="],
+
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
+  }
+}

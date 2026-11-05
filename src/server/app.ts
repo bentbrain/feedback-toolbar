@@ -1314,9 +1314,23 @@ export function createApp(options: Options) {
       await access(principal, before.projectId, true, true);
     }
     const thread = requireValue(await store.get('threads', before.threadId, threadSchema));
+    const latest =
+      input.delivery.stage === 'verified'
+        ? (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0]
+        : undefined;
     if (input.delivery.stage === 'verified') {
-      const latest = (await store.query('jobs', jobSchema, { threadId: thread.id }, 1, 0, true))[0];
-      if (latest?.id !== before.id || (await publicThread(thread)).unsubmittedMessageCount)
+      const reconcilesHistorical =
+        latest &&
+        ['review', 'failed'].includes(before.status) &&
+        ['review', 'failed'].includes(latest.status) &&
+        latest.delivery?.details.stage === 'verified' &&
+        latest.delivery.details.remaining.length === 0 &&
+        latest.delivery.details.commit === input.delivery.commit &&
+        latest.delivery.details.pullRequestUrl === input.delivery.pullRequestUrl;
+      if (
+        (latest?.id !== before.id && !reconcilesHistorical) ||
+        (await publicThread(thread)).unsubmittedMessageCount
+      )
         throw new HttpError(409, 'Newer feedback remains. Verify the current request first.');
     }
     const at = now();
@@ -1337,6 +1351,9 @@ export function createApp(options: Options) {
           },
           { kind: 'jobs', id: job.id, before, after: job },
           { kind: 'threads', id: thread.id, before: thread, after: updated },
+          ...(latest && latest.id !== before.id
+            ? [{ kind: 'jobs', id: latest.id, before: latest, after: latest }]
+            : []),
         ],
         [store.auditStatement(job.projectId, principal.id, 'work.delivery-recorded', job.id)],
       ))

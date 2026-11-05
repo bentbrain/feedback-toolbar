@@ -2272,6 +2272,450 @@ void test('unfinished requirements survive owner resubmission and evidence canno
   );
 });
 
+async function historicalDeliveryFixture(historicalStatus: 'review' | 'failed' = 'review') {
+  const f = fixture();
+  const owner = await f.account();
+  const project = await f.project(owner.cookie);
+  const thread = await f.thread(owner.cookie, project.id, 'Finish the Japan itinerary.');
+  const agent = await f.agent(owner.cookie, project.id);
+  const delivery = {
+    stage: 'verified',
+    summary: 'Japan feedback verified in the released commit.',
+    remaining: [],
+    pullRequestUrl: 'https://github.com/example/japan/pull/90',
+    commit: '8975916b78f17bb1a4ce96fe286c8513843d96d7',
+    reviewUrl: 'https://example.invalid/review/90',
+    deploymentUrl: 'https://example.invalid/deploy/90',
+    verificationUrl: 'https://example.invalid/proof/90',
+  };
+  const currentThread = async () =>
+    z
+      .object({ thread: threadSchema })
+      .parse(await (await f.call(`/api/threads/${thread.id}`, { cookie: owner.cookie })).json())
+      .thread;
+  async function queue(key: string) {
+    const current = await currentThread();
+    const response = await f.call(`/api/threads/${thread.id}/work`, {
+      method: 'POST',
+      cookie: owner.cookie,
+      body: { revision: current.revision, idempotencyKey: key },
+    });
+    assert.equal(response.status, 201);
+    return z.object({ job: publicJobSchema }).parse(await response.json()).job;
+  }
+  async function claim(requestId: string) {
+    const response = await f.call(`/api/projects/${project.id}/work/claim`, {
+      method: 'POST',
+      bearer: agent,
+      body: { requestId },
+    });
+    assert.equal(response.status, 200);
+    return z.object({ job: publicJobSchema, lease: z.string() }).parse(await response.json());
+  }
+  const historical = await claim((await queue('historical')).id);
+  assert.equal(
+    (
+      await f.call(`/api/work/${historical.job.id}/delivery`, {
+        method: 'PATCH',
+        bearer: agent,
+        body: { lease: historical.lease, delivery: { ...delivery, stage: 'merged' } },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/work/${historical.job.id}/complete`, {
+        method: 'POST',
+        bearer: agent,
+        body: { lease: historical.lease, status: historicalStatus, body: 'PR 90 merged.' },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call(`/api/threads/${thread.id}/messages`, {
+        method: 'POST',
+        cookie: owner.cookie,
+        body: { body: 'Verify the released itinerary.' },
+      })
+    ).status,
+    201,
+  );
+  const latest = await queue('latest');
+  async function finishLatest(status: 'review' | 'failed' = 'review', verified = true) {
+    const running = await claim(latest.id);
+    assert.equal(
+      (
+        await f.call(`/api/work/${latest.id}/delivery`, {
+          method: 'PATCH',
+          bearer: agent,
+          body: {
+            lease: running.lease,
+            delivery: { ...delivery, stage: verified ? 'verified' : 'merged' },
+          },
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await f.call(`/api/work/${latest.id}/complete`, {
+          method: 'POST',
+          bearer: agent,
+          body: { lease: running.lease, status, body: 'Release inspection recorded.' },
+        })
+      ).status,
+      200,
+    );
+  }
+  const reconcile = () =>
+    f.call(`/api/work/${historical.job.id}/delivery`, {
+      method: 'PATCH',
+      bearer: agent,
+      body: { delivery },
+    });
+  return {
+    ...f,
+    createProject: f.project,
+    owner,
+    project,
+    thread,
+    agentToken: agent,
+    delivery,
+    historical,
+    latest,
+    currentThread,
+    queue,
+    claim,
+    finishLatest,
+    reconcile,
+  };
+}
+
+void test('terminal historical delivery reconciles a later verified matching release', async (t) => {
+  const f = await historicalDeliveryFixture();
+  t.after(() => {
+    f.store.close();
+  });
+  await f.finishLatest();
+  assert.equal(
+    (
+      await f.call(`/api/threads/${f.thread.id}`, {
+        method: 'PATCH',
+        cookie: f.owner.cookie,
+        body: { status: 'resolved' },
+      })
+    ).status,
+    200,
+  );
+  const before = await f.store.get('jobs', f.historical.job.id, jobSchema);
+  const latest = await f.store.get('jobs', f.latest.id, jobSchema);
+  const thread = await f.currentThread();
+  assert.equal(thread.unsubmittedMessageCount, 0);
+  const response = await f.reconcile();
+  assert.equal(response.status, 200, await response.text());
+  const after = await f.store.get('jobs', f.historical.job.id, jobSchema);
+  assert.ok(before && after);
+  assert.equal(after.delivery?.details.stage, 'verified');
+  assert.deepEqual(after, {
+    ...before,
+    delivery: { details: f.delivery, reportedAt: after.delivery.reportedAt },
+    updatedAt: after.updatedAt,
+  });
+  assert.deepEqual(await f.store.get('jobs', f.latest.id, jobSchema), latest);
+  const updated = await f.currentThread();
+  assert.equal(updated.status, 'resolved');
+  assert.equal(updated.revision, thread.revision + 1);
+  assert.deepEqual(updated.messages, thread.messages);
+  assert.equal(updated.unsubmittedMessageCount, 0);
+});
+
+void test('terminal historical delivery keeps execution status and owner reconciliation boundaries', async (t) => {
+  for (const historicalStatus of z.enum(['review', 'failed']).options) {
+    for (const latestStatus of z.enum(['review', 'failed']).options) {
+      await t.test(`${historicalStatus} historical, ${latestStatus} latest`, async (t) => {
+        const f = await historicalDeliveryFixture(historicalStatus);
+        t.after(() => {
+          f.store.close();
+        });
+        await f.finishLatest(latestStatus);
+        const unrelated = await f.agent(f.owner.cookie, f.project.id, 'Unrelated runner');
+        const tenant = await f.account('Other tenant');
+        const otherProject = await f.createProject(tenant.cookie);
+        const foreign = await f.agent(tenant.cookie, otherProject.id);
+        const before = await f.store.get('jobs', f.historical.job.id, jobSchema);
+        for (const bearer of [unrelated, foreign]) {
+          assert.equal(
+            (
+              await f.call(`/api/work/${f.historical.job.id}/delivery`, {
+                method: 'PATCH',
+                bearer,
+                body: { delivery: f.delivery },
+              })
+            ).status,
+            403,
+          );
+        }
+        assert.deepEqual(await f.store.get('jobs', f.historical.job.id, jobSchema), before);
+        assert.equal((await f.reconcile()).status, 200);
+        assert.equal(
+          (
+            await f.call(`/api/work/${f.historical.job.id}/delivery`, {
+              method: 'PATCH',
+              cookie: f.owner.cookie,
+              body: { delivery: f.delivery },
+            })
+          ).status,
+          200,
+        );
+        const after = await f.store.get('jobs', f.historical.job.id, jobSchema);
+        assert.equal(after?.status, historicalStatus);
+        assert.deepEqual(after.snapshot, before?.snapshot);
+        assert.equal((await f.store.get('jobs', f.latest.id, jobSchema))?.status, latestStatus);
+      });
+    }
+  }
+});
+
+void test('terminal historical delivery still blocks unfinished feedback and mismatched releases', async (t) => {
+  for (const scenario of [
+    'queued',
+    'running verified',
+    'cancelled',
+    'review unverified',
+    'failed unverified',
+    'missing delivery',
+    'remaining requirements',
+    'unsent human feedback',
+    'different commit',
+    'different PR',
+    'cancelled historical',
+  ]) {
+    await t.test(scenario, async (t) => {
+      const f = await historicalDeliveryFixture();
+      t.after(() => {
+        f.store.close();
+      });
+      if (scenario === 'running verified' || scenario === 'missing delivery') {
+        const running = await f.claim(f.latest.id);
+        if (scenario === 'running verified') {
+          assert.equal(
+            (
+              await f.call(`/api/work/${f.latest.id}/delivery`, {
+                method: 'PATCH',
+                bearer: f.agentToken,
+                body: { lease: running.lease, delivery: f.delivery },
+              })
+            ).status,
+            200,
+          );
+        } else {
+          assert.equal(
+            (
+              await f.call(`/api/work/${f.latest.id}/complete`, {
+                method: 'POST',
+                bearer: f.agentToken,
+                body: { lease: running.lease, status: 'review', body: 'No delivery proof yet.' },
+              })
+            ).status,
+            200,
+          );
+        }
+      } else if (scenario === 'cancelled') {
+        assert.equal(
+          (
+            await f.call(`/api/work/${f.latest.id}/cancel`, {
+              method: 'POST',
+              cookie: f.owner.cookie,
+              body: {},
+            })
+          ).status,
+          200,
+        );
+      } else if (scenario !== 'queued') {
+        await f.finishLatest(
+          scenario === 'failed unverified' ? 'failed' : 'review',
+          !scenario.endsWith('unverified'),
+        );
+      }
+      if (scenario === 'remaining requirements' || scenario === 'cancelled historical') {
+        const id = scenario === 'cancelled historical' ? f.historical.job.id : f.latest.id;
+        assert.equal(
+          (
+            await f.call(`/api/work/${id}/delivery`, {
+              method: 'PATCH',
+              bearer: f.agentToken,
+              body: {
+                delivery: { ...f.delivery, stage: 'implemented', remaining: ['Still unfinished.'] },
+              },
+            })
+          ).status,
+          200,
+        );
+        if (scenario === 'cancelled historical') {
+          assert.equal(
+            (
+              await f.call(`/api/work/${id}/cancel`, {
+                method: 'POST',
+                cookie: f.owner.cookie,
+                body: {},
+              })
+            ).status,
+            200,
+          );
+        }
+      }
+      if (scenario === 'unsent human feedback') {
+        assert.equal(
+          (
+            await f.call(`/api/threads/${f.thread.id}/messages`, {
+              method: 'POST',
+              cookie: f.owner.cookie,
+              body: { body: 'One more itinerary correction.' },
+            })
+          ).status,
+          201,
+        );
+        assert.equal((await f.currentThread()).unsubmittedMessageCount, 1);
+      }
+      const before = await f.store.get('jobs', f.historical.job.id, jobSchema);
+      const thread = await f.currentThread();
+      const response = await f.call(`/api/work/${f.historical.job.id}/delivery`, {
+        method: 'PATCH',
+        cookie: f.owner.cookie,
+        body: {
+          delivery: {
+            ...f.delivery,
+            ...(scenario === 'different commit' ? { commit: 'a'.repeat(40) } : {}),
+            ...(scenario === 'different PR'
+              ? { pullRequestUrl: 'https://github.com/example/japan/pull/91' }
+              : {}),
+          },
+        },
+      });
+      assert.equal(response.status, 409, await response.text());
+      assert.deepEqual(await f.store.get('jobs', f.historical.job.id, jobSchema), before);
+      assert.deepEqual(await f.currentThread(), thread);
+    });
+  }
+});
+
+void test('terminal historical delivery rejects concurrent feedback or release-proof changes atomically', async (t) => {
+  for (const scenario of [
+    'latest proof',
+    'new request',
+    'human feedback',
+    'historical cancellation',
+  ]) {
+    await t.test(scenario, async (t) => {
+      const f = await historicalDeliveryFixture();
+      t.after(() => {
+        f.store.close();
+      });
+      await f.finishLatest();
+      if (scenario === 'historical cancellation') {
+        assert.equal(
+          (
+            await f.call(`/api/work/${f.historical.job.id}/delivery`, {
+              method: 'PATCH',
+              bearer: f.agentToken,
+              body: {
+                delivery: {
+                  ...f.delivery,
+                  stage: 'merged',
+                  remaining: ['Awaiting release proof.'],
+                },
+              },
+            })
+          ).status,
+          200,
+        );
+      }
+      const before = await f.store.get('jobs', f.historical.job.id, jobSchema);
+      const thread = await f.currentThread();
+      const project = await f.store.get('projects', f.project.id, projectSchema);
+      const deliveryEvents = (await f.store.events(f.project.id, 0)).filter(
+        (event) => event.kind === 'work.delivery-recorded',
+      );
+      const atomicCompare = f.store.atomicCompare.bind(f.store);
+      let injected = false;
+      t.mock.method(
+        f.store,
+        'atomicCompare',
+        async (...args: Parameters<Store['atomicCompare']>) => {
+          if (!injected) {
+            injected = true;
+            if (scenario === 'latest proof') {
+              const latest = await f.store.get('jobs', f.latest.id, jobSchema);
+              assert.ok(latest?.delivery);
+              // Change only the proof record, so this exercises its own compare guard.
+              assert.equal(
+                await f.store.compare('jobs', latest.id, latest, {
+                  ...latest,
+                  delivery: {
+                    ...latest.delivery,
+                    details: { ...latest.delivery.details, commit: 'b'.repeat(40) },
+                  },
+                }),
+                true,
+              );
+            } else if (scenario === 'new request') {
+              await f.queue('concurrent');
+            } else if (scenario === 'human feedback') {
+              assert.equal(
+                (
+                  await f.call(`/api/threads/${f.thread.id}/messages`, {
+                    method: 'POST',
+                    cookie: f.owner.cookie,
+                    body: { body: 'Feedback arrived during reconciliation.' },
+                  })
+                ).status,
+                201,
+              );
+            } else {
+              assert.equal(
+                (
+                  await f.call(`/api/work/${f.historical.job.id}/cancel`, {
+                    method: 'POST',
+                    cookie: f.owner.cookie,
+                    body: {},
+                  })
+                ).status,
+                200,
+              );
+            }
+          }
+          return atomicCompare(...args);
+        },
+      );
+      const response = await f.reconcile();
+      assert.equal(injected, true);
+      assert.equal(response.status, 409, await response.text());
+      const after = await f.store.get('jobs', f.historical.job.id, jobSchema);
+      assert.deepEqual(after?.delivery, before?.delivery);
+      assert.equal(after?.status, scenario === 'historical cancellation' ? 'cancelled' : 'review');
+      assert.deepEqual(
+        (await f.store.events(f.project.id, 0)).filter(
+          (event) => event.kind === 'work.delivery-recorded',
+        ),
+        deliveryEvents,
+      );
+      if (scenario !== 'new request') {
+        assert.deepEqual(await f.store.get('projects', f.project.id, projectSchema), project);
+      }
+      const updated = await f.currentThread();
+      if (scenario === 'human feedback') {
+        assert.equal(updated.revision, thread.revision + 1);
+        assert.equal(updated.messages.length, thread.messages.length + 1);
+      } else {
+        assert.deepEqual(updated, thread);
+      }
+    });
+  }
+});
+
 void test('review R1 repeated recovery upserts one completion and retains its reactions', async (t) => {
   const f = fixture();
   t.after(async () => {
